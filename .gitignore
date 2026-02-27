@@ -1,6 +1,6 @@
 # Binaries
-git-vwt
-git-vwt.exe
+/git-vwt
+/git-vwt.exe
 
 # Go build/test artifacts
 *.test

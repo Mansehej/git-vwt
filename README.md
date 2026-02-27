@@ -5,11 +5,14 @@ Git-native "patch inbox" that stores agent-produced unified diffs as commits und
 MVP commands:
 
 - `git vwt import --base <rev> [--id <id>] [--agent <name>] [--title <title>] [--stdin|<file>]`
+- `git vwt compose --base <rev> [--id <id>] [--agent <name>] [--title <title>] <patch-id>...`
 - `git vwt list`
 - `git vwt show <id>`
 - `git vwt diff <id>`
 - `git vwt export <id>`
-- `git vwt apply <id> [--no-commit]`
+- `git vwt cat <path>`
+- `git vwt cat <id|rev> <path>`
+- `git vwt apply <id>`
 - `git vwt drop <id>`
 - `git vwt snapshot [-m <msg>]`
 

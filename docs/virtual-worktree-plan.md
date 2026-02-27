@@ -9,7 +9,7 @@
 ## 1) Requirements and Invariants
 
 - Diff-only producers: subagents never write files; they return unified diffs.
-- Orchestrator flow: import diff -> inspect -> (optional) test -> apply/cherry-pick.
+- Orchestrator flow: import diff -> inspect -> (optional) test -> apply.
 - Safety invariants:
   - `import/show/diff/list/export` never touch the user's working tree.
   - Default deny patches touching `.git/**` (override flag optional).
@@ -29,14 +29,19 @@
 
 - `git vwt import --base <rev> [--id <id>] [--agent <name>] [--title <title>] [--stdin|<file>]`
   - Use temporary `GIT_INDEX_FILE` + `read-tree` + patch apply + `write-tree` + `commit-tree` + `update-ref`.
+- `git vwt compose --base <rev> [--id <id>] [--agent <name>] [--title <title>] <patch-id>...`
+  - Compose multiple patch commits into a single synthetic commit (shadow view) without touching the working tree.
 - `git vwt list`
   - Read refs and print id, subject, date, and base.
 - `git vwt show <id>`
 - `git vwt diff <id>`
 - `git vwt export <id>`
   - Portable patch output (`git format-patch --stdout <base>..<patch>`).
-- `git vwt apply <id> [--no-commit]`
-  - Default: `git cherry-pick <patch-commit>`.
+- `git vwt cat <path>`
+- `git vwt cat <id|rev> <path>`
+  - Print a file as it exists in HEAD (default) or in a patch/snapshot/rev (useful for agent context without applying).
+- `git vwt apply <id>`
+  - Apply the patch commit diff to the working tree as unstaged changes (do not move `HEAD` and do not update the index).
 - `git vwt drop <id>`
   - Delete `refs/vwt/patches/<id>`.
 - `git vwt gc`
