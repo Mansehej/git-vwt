@@ -18,6 +18,15 @@ import (
 
 const zeroOID = "0000000000000000000000000000000000000000"
 
+var (
+	osReadFile  = os.ReadFile
+	osWriteFile = os.WriteFile
+	osMkdirTemp = os.MkdirTemp
+	osRemoveAll = os.RemoveAll
+
+	vwtGenerateID = vwt.GenerateID
+)
+
 type IO struct {
 	In  io.Reader
 	Out io.Writer
@@ -193,7 +202,7 @@ func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 			}
 			raw = b
 		} else {
-			b, err := os.ReadFile(p)
+			b, err := osReadFile(p)
 			if err != nil {
 				fmt.Fprintf(stdio.Err, "import: read file: %v\n", err)
 				return 1
@@ -228,7 +237,7 @@ func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 
 	patchID := strings.TrimSpace(*id)
 	if patchID == "" {
-		gen, err := vwt.GenerateID(time.Now())
+		gen, err := vwtGenerateID(time.Now())
 		if err != nil {
 			fmt.Fprintf(stdio.Err, "import: generate id: %v\n", err)
 			return 1
@@ -251,18 +260,18 @@ func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 		return 1
 	}
 
-	tmpDir, err := os.MkdirTemp("", "vwt-import-")
+	tmpDir, err := osMkdirTemp("", "vwt-import-")
 	if err != nil {
 		fmt.Fprintf(stdio.Err, "import: temp dir: %v\n", err)
 		return 1
 	}
-	defer os.RemoveAll(tmpDir)
+	defer osRemoveAll(tmpDir)
 
 	idxPath := filepath.Join(tmpDir, "index")
 	msgPath := filepath.Join(tmpDir, "msg")
 
 	// Create empty index file.
-	if err := os.WriteFile(idxPath, nil, 0o600); err != nil {
+	if err := osWriteFile(idxPath, nil, 0o600); err != nil {
 		fmt.Fprintf(stdio.Err, "import: temp index: %v\n", err)
 		return 1
 	}
@@ -308,7 +317,7 @@ func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 		"vwt-tool-version": "(dev)",
 	})
 	msg := subject + "\n\n" + body + "\n"
-	if err := os.WriteFile(msgPath, []byte(msg), 0o600); err != nil {
+	if err := osWriteFile(msgPath, []byte(msg), 0o600); err != nil {
 		fmt.Fprintf(stdio.Err, "import: write message: %v\n", err)
 		return 1
 	}
@@ -383,7 +392,7 @@ func cmdCompose(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) in
 
 	composeID := strings.TrimSpace(*id)
 	if composeID == "" {
-		gen, err := vwt.GenerateID(time.Now())
+		gen, err := vwtGenerateID(time.Now())
 		if err != nil {
 			fmt.Fprintf(stdio.Err, "compose: generate id: %v\n", err)
 			return 1
@@ -406,16 +415,16 @@ func cmdCompose(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) in
 		return 1
 	}
 
-	tmpDir, err := os.MkdirTemp("", "vwt-compose-")
+	tmpDir, err := osMkdirTemp("", "vwt-compose-")
 	if err != nil {
 		fmt.Fprintf(stdio.Err, "compose: temp dir: %v\n", err)
 		return 1
 	}
-	defer os.RemoveAll(tmpDir)
+	defer osRemoveAll(tmpDir)
 
 	idxPath := filepath.Join(tmpDir, "index")
 	msgPath := filepath.Join(tmpDir, "msg")
-	if err := os.WriteFile(idxPath, nil, 0o600); err != nil {
+	if err := osWriteFile(idxPath, nil, 0o600); err != nil {
 		fmt.Fprintf(stdio.Err, "compose: temp index: %v\n", err)
 		return 1
 	}
@@ -505,7 +514,7 @@ func cmdCompose(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) in
 		"vwt-tool-version":  "(dev)",
 	})
 	msg := subject + "\n\n" + body + "\n"
-	if err := os.WriteFile(msgPath, []byte(msg), 0o600); err != nil {
+	if err := osWriteFile(msgPath, []byte(msg), 0o600); err != nil {
 		fmt.Fprintf(stdio.Err, "compose: write message: %v\n", err)
 		return 1
 	}
@@ -842,7 +851,7 @@ func cmdSnapshot(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) i
 		return 2
 	}
 
-	snapID, err := vwt.GenerateID(time.Now())
+	snapID, err := vwtGenerateID(time.Now())
 	if err != nil {
 		fmt.Fprintf(stdio.Err, "snapshot: generate id: %v\n", err)
 		return 1
@@ -870,15 +879,15 @@ func cmdSnapshot(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) i
 		}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "vwt-snapshot-")
+	tmpDir, err := osMkdirTemp("", "vwt-snapshot-")
 	if err != nil {
 		fmt.Fprintf(stdio.Err, "snapshot: temp dir: %v\n", err)
 		return 1
 	}
-	defer os.RemoveAll(tmpDir)
+	defer osRemoveAll(tmpDir)
 	idxPath := filepath.Join(tmpDir, "index")
 	msgPath := filepath.Join(tmpDir, "msg")
-	if err := os.WriteFile(idxPath, nil, 0o600); err != nil {
+	if err := osWriteFile(idxPath, nil, 0o600); err != nil {
 		fmt.Fprintf(stdio.Err, "snapshot: temp index: %v\n", err)
 		return 1
 	}
@@ -925,7 +934,7 @@ func cmdSnapshot(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) i
 		"vwt-tool-version": "(dev)",
 	})
 	msg := subject + "\n\n" + body + "\n"
-	if err := os.WriteFile(msgPath, []byte(msg), 0o600); err != nil {
+	if err := osWriteFile(msgPath, []byte(msg), 0o600); err != nil {
 		fmt.Fprintf(stdio.Err, "snapshot: write message: %v\n", err)
 		return 1
 	}
@@ -1049,11 +1058,22 @@ func validateTreePath(p string) error {
 	if p == "" {
 		return errors.New("empty path")
 	}
+	if strings.ContainsAny(p, "\x00\r\n") {
+		return fmt.Errorf("refusing invalid path characters: %q", p)
+	}
+	for strings.HasPrefix(p, "./") {
+		p = strings.TrimPrefix(p, "./")
+	}
+	if p == "" {
+		return errors.New("empty path")
+	}
 	if strings.HasPrefix(p, "/") {
 		return fmt.Errorf("refusing absolute path: %s", p)
 	}
-	if p == ".." || strings.HasPrefix(p, "../") || strings.Contains(p, "/../") {
-		return fmt.Errorf("refusing unsafe path: %s", p)
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return fmt.Errorf("refusing unsafe path: %s", p)
+		}
 	}
 	if p == ".git" || strings.HasPrefix(p, ".git/") {
 		return errors.New("refusing path .git/**")
