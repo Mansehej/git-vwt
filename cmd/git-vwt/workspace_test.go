@@ -1,0 +1,231 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestWorkspaceOpenWriteReadPatchApplyClose(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	git(t, dir, "init")
+	git(t, dir, "config", "user.name", "test")
+	git(t, dir, "config", "user.email", "test@example.com")
+	git(t, dir, "config", "commit.gpgsign", "false")
+
+	mustWrite(t, filepath.Join(dir, "hello.txt"), "hello\n")
+	git(t, dir, "add", "hello.txt")
+	git(t, dir, "commit", "-m", "base")
+
+	ws := "ws1"
+	before := git(t, dir, "status", "--porcelain")
+
+	// open (should not touch working directory)
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "open"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("open exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		fields := strings.Split(strings.TrimSpace(out.String()), "\t")
+		if len(fields) != 3 {
+			t.Fatalf("unexpected open output: %q", out.String())
+		}
+		if fields[0] != ws {
+			t.Fatalf("unexpected ws name: %q", fields[0])
+		}
+		if fields[1] == "" || fields[2] == "" {
+			t.Fatalf("unexpected open output: %q", out.String())
+		}
+	}
+
+	after := git(t, dir, "status", "--porcelain")
+	if before != after {
+		t.Fatalf("worktree changed by open: before=%q after=%q", before, after)
+	}
+
+	// write (should not touch working directory)
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "write", "hello.txt"}, IO{In: strings.NewReader("hello world\n"), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("write exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+	if got := mustRead(t, filepath.Join(dir, "hello.txt")); got != "hello\n" {
+		t.Fatalf("write modified working dir: %q", got)
+	}
+
+	// read (from workspace)
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "read", "hello.txt"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("read exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if got := out.String(); got != "hello world\n" {
+			t.Fatalf("unexpected read output: %q", got)
+		}
+	}
+
+	// patch
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "patch"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("patch exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if !strings.Contains(out.String(), "+hello world") {
+			t.Fatalf("patch missing change: %q", out.String())
+		}
+	}
+
+	// apply should modify working directory as unstaged changes
+	headBefore := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "apply"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("apply exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+	headAfter := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	if headAfter != headBefore {
+		t.Fatalf("apply moved HEAD: before=%s after=%s", headBefore, headAfter)
+	}
+	if got := mustRead(t, filepath.Join(dir, "hello.txt")); got != "hello world\n" {
+		t.Fatalf("apply did not change working dir: %q", got)
+	}
+	if cached := strings.TrimSpace(git(t, dir, "diff", "--cached", "--name-only")); cached != "" {
+		t.Fatalf("apply staged changes unexpectedly: %q", cached)
+	}
+	if status := git(t, dir, "status", "--porcelain"); status != " M hello.txt\n" {
+		t.Fatalf("unexpected status after apply: %q", status)
+	}
+
+	// close
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "close"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("close exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+	if ok := gitExitOK(dir, "show-ref", "--verify", "--quiet", wsRef(ws)); ok {
+		t.Fatalf("workspace ref still exists after close")
+	}
+}
+
+func TestWorkspaceBaseIsDirtyWorkingDirectorySnapshot(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	git(t, dir, "init")
+	git(t, dir, "config", "user.name", "test")
+	git(t, dir, "config", "user.email", "test@example.com")
+	git(t, dir, "config", "commit.gpgsign", "false")
+
+	mustWrite(t, filepath.Join(dir, "hello.txt"), "clean\n")
+	git(t, dir, "add", "hello.txt")
+	git(t, dir, "commit", "-m", "base")
+
+	// Make repo dirty before workspace creation.
+	mustWrite(t, filepath.Join(dir, "hello.txt"), "dirty\n")
+	if status := git(t, dir, "status", "--porcelain"); status != " M hello.txt\n" {
+		t.Fatalf("unexpected status: %q", status)
+	}
+
+	ws := "wsdirty"
+
+	// read should reflect dirty working directory (snapshot base)
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "read", "hello.txt"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("read exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if got := out.String(); got != "dirty\n" {
+			t.Fatalf("workspace did not see dirty base, got: %q", got)
+		}
+	}
+
+	// patch should be empty (workspace head == snapshot base)
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "patch"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("patch exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if strings.TrimSpace(out.String()) != "" {
+			t.Fatalf("expected empty patch, got: %q", out.String())
+		}
+	}
+
+	// write a new file and ensure patch does not include the pre-existing dirty change.
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "write", "agent.txt"}, IO{In: strings.NewReader("agent\n"), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("write exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "patch"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("patch exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		p := out.String()
+		if !strings.Contains(p, "diff --git a/agent.txt b/agent.txt") {
+			t.Fatalf("patch missing agent file: %q", p)
+		}
+		if strings.Contains(p, "hello.txt") {
+			t.Fatalf("patch unexpectedly includes dirty base file: %q", p)
+		}
+	}
+
+	// apply should add agent.txt but not change hello.txt (already dirty)
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "apply"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("apply exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+	if got := mustRead(t, filepath.Join(dir, "hello.txt")); got != "dirty\n" {
+		t.Fatalf("apply changed dirty base file unexpectedly: %q", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "agent.txt")); got != "agent\n" {
+		t.Fatalf("apply did not create agent file: %q", got)
+	}
+	status := git(t, dir, "status", "--porcelain")
+	if !strings.Contains(status, " M hello.txt\n") || !strings.Contains(status, "?? agent.txt\n") {
+		t.Fatalf("unexpected status after apply: %q", status)
+	}
+}

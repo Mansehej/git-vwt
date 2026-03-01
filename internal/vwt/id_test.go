@@ -47,10 +47,7 @@ func (failingReader) Read(p []byte) (int, error) {
 }
 
 func TestRefs(t *testing.T) {
-	if got := PatchRef("x"); got != "refs/vwt/patches/x" {
-		t.Fatalf("got=%q", got)
-	}
-	if got := SnapshotRef("y"); got != "refs/vwt/snapshots/y" {
+	if got := WorkspaceRef("x"); got != "refs/vwt/workspaces/x" {
 		t.Fatalf("got=%q", got)
 	}
 }

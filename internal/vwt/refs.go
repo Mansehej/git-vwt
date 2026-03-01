@@ -1,14 +1,11 @@
 package vwt
 
 const (
-	PatchRefPrefix    = "refs/vwt/patches/"
-	SnapshotRefPrefix = "refs/vwt/snapshots/"
+	// WorkspaceRefPrefix stores the current virtual workspace state.
+	// The ref points at a commit whose tree is the workspace view.
+	WorkspaceRefPrefix = "refs/vwt/workspaces/"
 )
 
-func PatchRef(id string) string {
-	return PatchRefPrefix + id
-}
-
-func SnapshotRef(id string) string {
-	return SnapshotRefPrefix + id
+func WorkspaceRef(name string) string {
+	return WorkspaceRefPrefix + name
 }

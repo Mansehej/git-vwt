@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestRunDebugFlagEnablesGitCommandLogging(t *testing.T) {
+func TestDebugFlagEnablesGitCommandLogging(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
@@ -23,7 +23,7 @@ func TestRunDebugFlagEnablesGitCommandLogging(t *testing.T) {
 
 	out, errOut := bytes.Buffer{}, bytes.Buffer{}
 	withChdir(t, dir, func() {
-		code := run(ctx, []string{"--debug", "list"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+		code := run(ctx, []string{"--debug", "--ws", "dbg", "open"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, errOut.String())
 		}

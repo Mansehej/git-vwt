@@ -1,77 +1,72 @@
 ---
 name: virtual-worktree
-description: Orchestrate diff-only agent patches with git-vwt (import, compose, inspect, cat, export, apply, drop) without creating per-agent worktrees.
+description: Use git-vwt as a virtual workspace (read/write/search/patch) without creating worktrees or dealing with hunks.
 ---
 
-# Virtual Worktree Orchestrator
+# Virtual Worktree (Workspace) Orchestrator
 
-You manage a Git-native "patch inbox" workflow using the `git vwt` CLI.
+You operate a Git-native virtual workspace using the `git vwt` CLI.
+
+The key behavior: you do normal file operations (read/write/rm/mv/ls/search) against a *virtual workspace* stored under a private ref. You do not manually generate or apply unified diff hunks.
 
 ## Invariants
 
-- Diff-only producers: subagents must return unified diffs; they never write files.
-- Read-only commands (`import/compose/list/show/diff/export/cat/snapshot/gc`) must not modify the user's working tree.
-- Reject patches touching `.git/**`.
+- Workspace commands must not modify the user's working directory (except `git vwt apply`).
+- Refuse paths under `.git/**`.
 
-Unified diff correctness
-- Hunks must use proper unified-diff headers with line ranges (no bare `@@`).
+## Quick Start
 
-## Workflow
-
-1. Choose a base commit.
-   - Prefer an explicit `--base <rev>`.
-   - If the repository is dirty, create a synthetic base with `git vwt snapshot` and use that snapshot commit as `--base`.
-2. Import the diff:
+Select a workspace name (default is `default`):
 
 ```bash
-git vwt import --base <rev> --stdin
+git vwt --ws default open
 ```
 
-3. Inspect:
+If the repo is dirty, `open` snapshots the current working directory and uses that as the base the agent sees.
+
+## Common Operations
+
+Read a file from the workspace:
 
 ```bash
-git vwt list
-git vwt show <id>
-git vwt diff <id>
+git vwt read path/to/file.txt
 ```
 
-Preview a composed "shadow" state (no working tree changes):
+Write a file to the workspace (content from stdin):
 
 ```bash
-git vwt compose --base <rev> [--id <shadow-id>] <id>...
-git vwt cat <shadow-id> <path>
+git vwt write path/to/file.txt
 ```
 
-Read HEAD version of a file (no patch id needed):
+Delete and rename:
 
 ```bash
-git vwt cat <path>
+git vwt rm path/to/file.txt
+git vwt mv old.txt new.txt
 ```
 
-Notes:
-- `compose` creates a new synthetic patch commit under `refs/vwt/patches/<shadow-id>`.
-- You can base follow-up patches on the composed state:
+List and search:
 
 ```bash
-git vwt import --base refs/vwt/patches/<shadow-id> --stdin
+git vwt ls
+git vwt ls path/to/dir
+git vwt search "pattern" -- '*.go'
 ```
 
-4. Export (portable patch email):
+Get the resulting patch (derived artifact):
 
 ```bash
-git vwt export <id>
+git vwt patch
 ```
 
-5. Apply:
+Materialize changes into the working directory as unstaged edits:
 
 ```bash
-git vwt apply <id>
+git vwt apply
 ```
 
-Applies patch changes into the working tree as unstaged changes (no commit created).
-
-6. Drop when done:
+Close the workspace when finished:
 
 ```bash
-git vwt drop <id>
+git vwt close
 ```

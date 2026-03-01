@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -17,15 +16,6 @@ import (
 )
 
 const zeroOID = "0000000000000000000000000000000000000000"
-
-var (
-	osReadFile  = os.ReadFile
-	osWriteFile = os.WriteFile
-	osMkdirTemp = os.MkdirTemp
-	osRemoveAll = os.RemoveAll
-
-	vwtGenerateID = vwt.GenerateID
-)
 
 type IO struct {
 	In  io.Reader
@@ -46,6 +36,9 @@ func run(ctx context.Context, argv []string, stdio IO) int {
 	}
 
 	debug := false
+	wsName := strings.TrimSpace(os.Getenv("VWT_WORKSPACE"))
+	agentName := strings.TrimSpace(os.Getenv("VWT_AGENT"))
+
 	for len(argv) > 0 {
 		switch argv[0] {
 		case "--help", "-h", "help":
@@ -54,14 +47,32 @@ func run(ctx context.Context, argv []string, stdio IO) int {
 		case "--debug":
 			debug = true
 			argv = argv[1:]
+		case "--ws":
+			if len(argv) < 2 {
+				fmt.Fprintln(stdio.Err, "missing value for --ws")
+				return 2
+			}
+			wsName = strings.TrimSpace(argv[1])
+			argv = argv[2:]
+		case "--agent":
+			if len(argv) < 2 {
+				fmt.Fprintln(stdio.Err, "missing value for --agent")
+				return 2
+			}
+			agentName = strings.TrimSpace(argv[1])
+			argv = argv[2:]
 		default:
 			goto doneGlobals
 		}
 	}
+
 doneGlobals:
 	if len(argv) == 0 {
 		usage(stdio.Out)
 		return 2
+	}
+	if wsName == "" {
+		wsName = "default"
 	}
 
 	gr := gitx.Runner{Dir: ".", Env: os.Environ(), Debug: debug, DebugWriter: stdio.Err}
@@ -69,28 +80,28 @@ doneGlobals:
 	args := argv[1:]
 
 	switch cmd {
-	case "import":
-		return cmdImport(ctx, gr, args, stdio)
-	case "compose":
-		return cmdCompose(ctx, gr, args, stdio)
-	case "list":
-		return cmdList(ctx, gr, args, stdio)
-	case "show":
-		return cmdShow(ctx, gr, args, stdio)
-	case "diff":
-		return cmdDiff(ctx, gr, args, stdio)
-	case "export":
-		return cmdExport(ctx, gr, args, stdio)
-	case "cat":
-		return cmdCat(ctx, gr, args, stdio)
+	case "open":
+		return cmdOpen(ctx, gr, wsName, agentName, args, stdio)
+	case "info":
+		return cmdInfo(ctx, gr, wsName, args, stdio)
+	case "read":
+		return cmdRead(ctx, gr, wsName, agentName, args, stdio)
+	case "write":
+		return cmdWrite(ctx, gr, wsName, agentName, args, stdio)
+	case "rm":
+		return cmdRemove(ctx, gr, wsName, agentName, args, stdio)
+	case "mv":
+		return cmdMove(ctx, gr, wsName, agentName, args, stdio)
+	case "ls":
+		return cmdListDir(ctx, gr, wsName, agentName, args, stdio)
+	case "search":
+		return cmdSearch(ctx, gr, wsName, agentName, args, stdio)
+	case "patch":
+		return cmdPatch(ctx, gr, wsName, agentName, args, stdio)
 	case "apply":
-		return cmdApply(ctx, gr, args, stdio)
-	case "drop":
-		return cmdDrop(ctx, gr, args, stdio)
-	case "snapshot":
-		return cmdSnapshot(ctx, gr, args, stdio)
-	case "gc":
-		return cmdGC(ctx, gr, args, stdio)
+		return cmdApply(ctx, gr, wsName, agentName, args, stdio)
+	case "close":
+		return cmdClose(ctx, gr, wsName, args, stdio)
 	default:
 		fmt.Fprintf(stdio.Err, "unknown subcommand: %s\n", cmd)
 		usage(stdio.Err)
@@ -99,24 +110,25 @@ doneGlobals:
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "git vwt - virtual worktree (diff-only) patch inbox")
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  git vwt import --base <rev> [--id <id>] [--agent <name>] [--title <title>] [--stdin|<file>]")
-	fmt.Fprintln(w, "  git vwt compose --base <rev> [--id <id>] [--agent <name>] [--title <title>] <patch-id>...")
-	fmt.Fprintln(w, "  git vwt list")
-	fmt.Fprintln(w, "  git vwt show <id>")
-	fmt.Fprintln(w, "  git vwt diff <id>")
-	fmt.Fprintln(w, "  git vwt export <id>")
-	fmt.Fprintln(w, "  git vwt cat <path>")
-	fmt.Fprintln(w, "  git vwt cat <id|rev> <path>")
-	fmt.Fprintln(w, "  git vwt apply <id>")
-	fmt.Fprintln(w, "  git vwt drop <id>")
-	fmt.Fprintln(w, "  git vwt snapshot [-m <msg>]")
-	fmt.Fprintln(w, "  git vwt gc [--keep-days <n>] [--dry-run]")
+	fmt.Fprintln(w, "git vwt - virtual workspace (no hunks, no worktrees)")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Global flags:")
-	fmt.Fprintln(w, "  --debug   Print git commands to stderr")
+	fmt.Fprintln(w, "  --ws <name>     Workspace name (default: $VWT_WORKSPACE or 'default')")
+	fmt.Fprintln(w, "  --agent <name>  Author name for workspace commits (default: $VWT_AGENT)")
+	fmt.Fprintln(w, "  --debug         Print git commands to stderr")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  git vwt open [--base <rev>|auto]   Create workspace if missing")
+	fmt.Fprintln(w, "  git vwt info                      Print workspace base/head")
+	fmt.Fprintln(w, "  git vwt read <path>               Read file from workspace")
+	fmt.Fprintln(w, "  git vwt write <path> [<src-file>] Write file to workspace (stdin if no src)")
+	fmt.Fprintln(w, "  git vwt rm <path>                 Delete file in workspace")
+	fmt.Fprintln(w, "  git vwt mv <from> <to>            Rename file in workspace")
+	fmt.Fprintln(w, "  git vwt ls [path]                 List directory in workspace")
+	fmt.Fprintln(w, "  git vwt search <pattern> [-- <pathspec>...]  Search workspace")
+	fmt.Fprintln(w, "  git vwt patch                     Print unified diff vs workspace base")
+	fmt.Fprintln(w, "  git vwt apply                     Apply workspace changes to working dir")
+	fmt.Fprintln(w, "  git vwt close                     Delete workspace ref")
 }
 
 func ensureRepo(ctx context.Context, gr gitx.Runner) error {
@@ -159,874 +171,6 @@ func refExists(ctx context.Context, gr gitx.Runner, ref string) (bool, error) {
 	return false, err
 }
 
-func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("import", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	base := fs.String("base", "", "Base commit to apply diff against (required)")
-	id := fs.String("id", "", "Patch id (ref-safe). Auto-generated if omitted")
-	agent := fs.String("agent", "", "Agent name")
-	title := fs.String("title", "", "Title")
-	stdin := fs.Bool("stdin", false, "Read diff from stdin")
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	if *base == "" {
-		fmt.Fprintln(stdio.Err, "import: missing --base")
-		return 2
-	}
-
-	var raw []byte
-	switch {
-	case *stdin:
-		if fs.NArg() != 0 {
-			fmt.Fprintln(stdio.Err, "import: when --stdin is set, do not pass a file path")
-			return 2
-		}
-		b, err := io.ReadAll(stdio.In)
-		if err != nil {
-			fmt.Fprintf(stdio.Err, "import: read stdin: %v\n", err)
-			return 1
-		}
-		raw = b
-	case fs.NArg() == 1:
-		p := fs.Arg(0)
-		if p == "-" {
-			b, err := io.ReadAll(stdio.In)
-			if err != nil {
-				fmt.Fprintf(stdio.Err, "import: read stdin: %v\n", err)
-				return 1
-			}
-			raw = b
-		} else {
-			b, err := osReadFile(p)
-			if err != nil {
-				fmt.Fprintf(stdio.Err, "import: read file: %v\n", err)
-				return 1
-			}
-			raw = b
-		}
-	default:
-		fmt.Fprintln(stdio.Err, "import: provide --stdin or a patch file path")
-		return 2
-	}
-
-	diff, err := vwt.ExtractDiff(raw)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "import: %v\n", err)
-		return 1
-	}
-	if err := vwt.ValidatePatchPaths(diff); err != nil {
-		fmt.Fprintf(stdio.Err, "import: %v\n", err)
-		return 1
-	}
-
-	baseCommit, err := resolveCommit(ctx, gr, *base)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "import: resolve base commit: %v\n", err)
-		return 1
-	}
-	baseTree, err := resolveTree(ctx, gr, baseCommit)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "import: resolve base tree: %v\n", err)
-		return 1
-	}
-
-	patchID := strings.TrimSpace(*id)
-	if patchID == "" {
-		gen, err := vwtGenerateID(time.Now())
-		if err != nil {
-			fmt.Fprintf(stdio.Err, "import: generate id: %v\n", err)
-			return 1
-		}
-		patchID = gen
-	}
-
-	ref := vwt.PatchRef(patchID)
-	if err := checkRefFormat(ctx, gr, ref); err != nil {
-		fmt.Fprintf(stdio.Err, "import: invalid id for ref %q: %v\n", ref, err)
-		return 2
-	}
-	exists, err := refExists(ctx, gr, ref)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "import: check existing ref: %v\n", err)
-		return 1
-	}
-	if exists {
-		fmt.Fprintf(stdio.Err, "import: patch id already exists: %s\n", patchID)
-		return 1
-	}
-
-	tmpDir, err := osMkdirTemp("", "vwt-import-")
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "import: temp dir: %v\n", err)
-		return 1
-	}
-	defer osRemoveAll(tmpDir)
-
-	idxPath := filepath.Join(tmpDir, "index")
-	msgPath := filepath.Join(tmpDir, "msg")
-
-	// Create empty index file.
-	if err := osWriteFile(idxPath, nil, 0o600); err != nil {
-		fmt.Fprintf(stdio.Err, "import: temp index: %v\n", err)
-		return 1
-	}
-
-	// Build patch commit in a temporary index.
-	tmpGit := gr.WithEnv(map[string]string{"GIT_INDEX_FILE": idxPath})
-	if _, err := tmpGit.RunGit(ctx, nil, "read-tree", baseCommit); err != nil {
-		fmt.Fprintf(stdio.Err, "import: git read-tree: %v\n", err)
-		return 1
-	}
-	if _, err := tmpGit.RunGit(ctx, bytes.NewReader(diff), "apply", "--cached", "--whitespace=nowarn", "--recount"); err != nil {
-		fmt.Fprintf(stdio.Err, "import: git apply: %v\n", err)
-		return 1
-	}
-	treeRes, err := tmpGit.RunGit(ctx, nil, "write-tree")
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "import: git write-tree: %v\n", err)
-		return 1
-	}
-	newTree := strings.TrimSpace(treeRes.Stdout)
-	if newTree == baseTree {
-		fmt.Fprintln(stdio.Err, "import: patch results in no changes")
-		return 1
-	}
-
-	now := time.Now().UTC()
-	subject := "vwt: patch " + patchID
-	if strings.TrimSpace(*title) != "" {
-		if strings.TrimSpace(*agent) != "" {
-			subject = fmt.Sprintf("vwt(%s): %s", strings.TrimSpace(*agent), strings.TrimSpace(*title))
-		} else {
-			subject = fmt.Sprintf("vwt: %s", strings.TrimSpace(*title))
-		}
-	}
-	body := buildKV(map[string]string{
-		"vwt-id":           patchID,
-		"vwt-agent":        strings.TrimSpace(*agent),
-		"vwt-title":        strings.TrimSpace(*title),
-		"vwt-base":         baseCommit,
-		"vwt-imported-at":  now.Format(time.RFC3339),
-		"vwt-diff-sha256":  vwt.PatchSHA256Hex(diff),
-		"vwt-tool":         "git-vwt",
-		"vwt-tool-version": "(dev)",
-	})
-	msg := subject + "\n\n" + body + "\n"
-	if err := osWriteFile(msgPath, []byte(msg), 0o600); err != nil {
-		fmt.Fprintf(stdio.Err, "import: write message: %v\n", err)
-		return 1
-	}
-
-	authorName := "vwt"
-	if strings.TrimSpace(*agent) != "" {
-		authorName = strings.TrimSpace(*agent)
-	}
-
-	commitGit := tmpGit.WithEnv(map[string]string{
-		"GIT_AUTHOR_NAME":     authorName,
-		"GIT_AUTHOR_EMAIL":    "vwt@local",
-		"GIT_COMMITTER_NAME":  "vwt",
-		"GIT_COMMITTER_EMAIL": "vwt@local",
-		"GIT_AUTHOR_DATE":     now.Format(time.RFC3339),
-		"GIT_COMMITTER_DATE":  now.Format(time.RFC3339),
-	})
-	commitRes, err := commitGit.RunGit(ctx, nil, "commit-tree", newTree, "-p", baseCommit, "-F", msgPath)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "import: git commit-tree: %v\n", err)
-		return 1
-	}
-	commit := strings.TrimSpace(commitRes.Stdout)
-
-	// Create ref atomically (no clobber) by requiring an all-zero old value.
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt import "+patchID, ref, commit, zeroOID); err != nil {
-		if exists, exErr := refExists(ctx, gr, ref); exErr == nil && exists {
-			fmt.Fprintf(stdio.Err, "import: patch id already exists: %s\n", patchID)
-			return 1
-		}
-		fmt.Fprintf(stdio.Err, "import: git update-ref: %v\n", err)
-		return 1
-	}
-
-	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", patchID, commit, baseCommit)
-	return 0
-}
-
-func cmdCompose(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("compose", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	base := fs.String("base", "", "Base commit to compose against (required)")
-	id := fs.String("id", "", "Compose id (ref-safe). Auto-generated if omitted")
-	agent := fs.String("agent", "", "Agent name")
-	title := fs.String("title", "", "Title")
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	if *base == "" {
-		fmt.Fprintln(stdio.Err, "compose: missing --base")
-		return 2
-	}
-	if fs.NArg() == 0 {
-		fmt.Fprintln(stdio.Err, "compose: expected <patch-id>...")
-		return 2
-	}
-
-	baseCommit, err := resolveCommit(ctx, gr, *base)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "compose: resolve base commit: %v\n", err)
-		return 1
-	}
-	baseTree, err := resolveTree(ctx, gr, baseCommit)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "compose: resolve base tree: %v\n", err)
-		return 1
-	}
-
-	composeID := strings.TrimSpace(*id)
-	if composeID == "" {
-		gen, err := vwtGenerateID(time.Now())
-		if err != nil {
-			fmt.Fprintf(stdio.Err, "compose: generate id: %v\n", err)
-			return 1
-		}
-		composeID = gen
-	}
-
-	ref := vwt.PatchRef(composeID)
-	if err := checkRefFormat(ctx, gr, ref); err != nil {
-		fmt.Fprintf(stdio.Err, "compose: invalid id for ref %q: %v\n", ref, err)
-		return 2
-	}
-	exists, err := refExists(ctx, gr, ref)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "compose: check existing ref: %v\n", err)
-		return 1
-	}
-	if exists {
-		fmt.Fprintf(stdio.Err, "compose: id already exists: %s\n", composeID)
-		return 1
-	}
-
-	tmpDir, err := osMkdirTemp("", "vwt-compose-")
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "compose: temp dir: %v\n", err)
-		return 1
-	}
-	defer osRemoveAll(tmpDir)
-
-	idxPath := filepath.Join(tmpDir, "index")
-	msgPath := filepath.Join(tmpDir, "msg")
-	if err := osWriteFile(idxPath, nil, 0o600); err != nil {
-		fmt.Fprintf(stdio.Err, "compose: temp index: %v\n", err)
-		return 1
-	}
-
-	// Compose in a temporary index (does not touch the working tree).
-	tmpGit := gr.WithEnv(map[string]string{"GIT_INDEX_FILE": idxPath})
-	if _, err := tmpGit.RunGit(ctx, nil, "read-tree", baseCommit); err != nil {
-		fmt.Fprintf(stdio.Err, "compose: git read-tree: %v\n", err)
-		return 1
-	}
-
-	patchIDs := fs.Args()
-	for _, pid := range patchIDs {
-		pid = strings.TrimSpace(pid)
-		if pid == "" {
-			fmt.Fprintln(stdio.Err, "compose: empty patch id")
-			return 2
-		}
-
-		patchCommit, err := resolveCommit(ctx, gr, vwt.PatchRef(pid))
-		if err != nil {
-			fmt.Fprintf(stdio.Err, "compose: unknown patch id: %s\n", pid)
-			return 1
-		}
-		patchBase, err := commitParent(ctx, gr, patchCommit)
-		if err != nil {
-			fmt.Fprintf(stdio.Err, "compose: patch %s: %v\n", pid, err)
-			return 1
-		}
-
-		diffRes, err := gr.RunGit(ctx, nil, "diff",
-			"--no-color",
-			"--binary",
-			"--full-index",
-			"--no-renames",
-			"--no-ext-diff",
-			"--no-textconv",
-			patchBase, patchCommit,
-		)
-		if err != nil {
-			fmt.Fprintf(stdio.Err, "compose: patch %s: git diff: %v\n", pid, err)
-			return 1
-		}
-		d := []byte(diffRes.Stdout)
-		if err := vwt.ValidatePatchPaths(d); err != nil {
-			fmt.Fprintf(stdio.Err, "compose: patch %s: %v\n", pid, err)
-			return 1
-		}
-		if _, err := tmpGit.RunGit(ctx, bytes.NewReader(d), "apply", "--cached", "--whitespace=nowarn", "--recount"); err != nil {
-			fmt.Fprintf(stdio.Err, "compose: apply %s: %v\n", pid, err)
-			return 1
-		}
-	}
-
-	treeRes, err := tmpGit.RunGit(ctx, nil, "write-tree")
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "compose: git write-tree: %v\n", err)
-		return 1
-	}
-	newTree := strings.TrimSpace(treeRes.Stdout)
-	if newTree == baseTree {
-		fmt.Fprintln(stdio.Err, "compose: results in no changes")
-		return 1
-	}
-
-	now := time.Now().UTC()
-	agentName := strings.TrimSpace(*agent)
-	titleText := strings.TrimSpace(*title)
-	subject := "vwt: compose " + composeID
-	if titleText != "" {
-		if agentName != "" {
-			subject = fmt.Sprintf("vwt(%s): compose %s", agentName, titleText)
-		} else {
-			subject = fmt.Sprintf("vwt: compose %s", titleText)
-		}
-	}
-	body := buildKV(map[string]string{
-		"vwt-id":            composeID,
-		"vwt-kind":          "compose",
-		"vwt-agent":         agentName,
-		"vwt-title":         titleText,
-		"vwt-base":          baseCommit,
-		"vwt-compose-count": fmt.Sprintf("%d", len(patchIDs)),
-		"vwt-compose-ids":   strings.Join(patchIDs, ","),
-		"vwt-created-at":    now.Format(time.RFC3339),
-		"vwt-tool":          "git-vwt",
-		"vwt-tool-version":  "(dev)",
-	})
-	msg := subject + "\n\n" + body + "\n"
-	if err := osWriteFile(msgPath, []byte(msg), 0o600); err != nil {
-		fmt.Fprintf(stdio.Err, "compose: write message: %v\n", err)
-		return 1
-	}
-
-	authorName := "vwt"
-	if agentName != "" {
-		authorName = agentName
-	}
-	commitGit := tmpGit.WithEnv(map[string]string{
-		"GIT_AUTHOR_NAME":     authorName,
-		"GIT_AUTHOR_EMAIL":    "vwt@local",
-		"GIT_COMMITTER_NAME":  "vwt",
-		"GIT_COMMITTER_EMAIL": "vwt@local",
-		"GIT_AUTHOR_DATE":     now.Format(time.RFC3339),
-		"GIT_COMMITTER_DATE":  now.Format(time.RFC3339),
-	})
-	commitRes, err := commitGit.RunGit(ctx, nil, "commit-tree", newTree, "-p", baseCommit, "-F", msgPath)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "compose: git commit-tree: %v\n", err)
-		return 1
-	}
-	commit := strings.TrimSpace(commitRes.Stdout)
-
-	// Create ref atomically (no clobber) by requiring an all-zero old value.
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt compose "+composeID, ref, commit, zeroOID); err != nil {
-		if exists, exErr := refExists(ctx, gr, ref); exErr == nil && exists {
-			fmt.Fprintf(stdio.Err, "compose: id already exists: %s\n", composeID)
-			return 1
-		}
-		fmt.Fprintf(stdio.Err, "compose: git update-ref: %v\n", err)
-		return 1
-	}
-
-	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", composeID, commit, baseCommit)
-	return 0
-}
-
-func cmdList(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 0 {
-		fmt.Fprintln(stdio.Err, "list: no arguments")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-
-	res, err := gr.RunGit(ctx, nil, "for-each-ref", vwt.PatchRefPrefix, "--sort=-committerdate", "--format=%(refname:strip=3)\t%(objectname)\t%(committerdate:iso8601)\t%(subject)")
-	if err != nil {
-		// No refs is not an error; for-each-ref still exits 0.
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	out := strings.TrimSpace(res.Stdout)
-	if out == "" {
-		return 0
-	}
-
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 4)
-		if len(parts) < 4 {
-			continue
-		}
-		id, commit, date, subject := parts[0], parts[1], parts[2], parts[3]
-		base := "-"
-		parents, _ := gr.RunGit(ctx, nil, "rev-list", "--parents", "-n", "1", commit)
-		toks := strings.Fields(parents.Stdout)
-		if len(toks) >= 2 {
-			base = toks[1]
-		}
-		fmt.Fprintf(stdio.Out, "%s\t%s\t%s\t%s\n", id, date, shortSHA(base), subject)
-	}
-	return 0
-}
-
-func cmdShow(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("show", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stdio.Err, "show: expected <id>")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	id := fs.Arg(0)
-	ref := vwt.PatchRef(id)
-	commit, err := resolveCommit(ctx, gr, ref)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "show: unknown patch id: %s\n", id)
-		return 1
-	}
-	parents, _ := gr.RunGit(ctx, nil, "rev-list", "--parents", "-n", "1", commit)
-	toks := strings.Fields(parents.Stdout)
-	base := "-"
-	if len(toks) >= 2 {
-		base = toks[1]
-	}
-	fmt.Fprintf(stdio.Out, "id: %s\nref: %s\ncommit: %s\nbase: %s\n\n", id, ref, commit, base)
-
-	showRes, err := gr.RunGit(ctx, nil, "show", "--no-patch", "--pretty=fuller", commit)
-	if err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	fmt.Fprint(stdio.Out, showRes.Stdout)
-	return 0
-}
-
-func cmdDiff(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stdio.Err, "diff: expected <id>")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	id := fs.Arg(0)
-	commit, err := resolveCommit(ctx, gr, vwt.PatchRef(id))
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "diff: unknown patch id: %s\n", id)
-		return 1
-	}
-	base, err := commitParent(ctx, gr, commit)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "diff: %v\n", err)
-		return 1
-	}
-	diffRes, err := gr.RunGit(ctx, nil, "diff",
-		"--no-color",
-		"--binary",
-		"--full-index",
-		"--no-renames",
-		"--no-ext-diff",
-		"--no-textconv",
-		base, commit,
-	)
-	if err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	fmt.Fprint(stdio.Out, diffRes.Stdout)
-	return 0
-}
-
-func cmdExport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("export", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stdio.Err, "export: expected <id>")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	id := fs.Arg(0)
-	commit, err := resolveCommit(ctx, gr, vwt.PatchRef(id))
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "export: unknown patch id: %s\n", id)
-		return 1
-	}
-	base, err := commitParent(ctx, gr, commit)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "export: %v\n", err)
-		return 1
-	}
-	patchRes, err := gr.RunGit(ctx, nil, "format-patch", "--stdout", base+".."+commit)
-	if err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	fmt.Fprint(stdio.Out, patchRes.Stdout)
-	return 0
-}
-
-func cmdCat(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("cat", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 && fs.NArg() != 2 {
-		fmt.Fprintln(stdio.Err, "cat: expected <path> OR <id|rev> <path>")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-
-	revOrID := "HEAD"
-	path := ""
-	if fs.NArg() == 1 {
-		path = strings.TrimSpace(fs.Arg(0))
-	} else {
-		revOrID = strings.TrimSpace(fs.Arg(0))
-		path = strings.TrimSpace(fs.Arg(1))
-	}
-	if revOrID == "" || path == "" {
-		fmt.Fprintln(stdio.Err, "cat: expected <path> OR <id|rev> <path>")
-		return 2
-	}
-	if err := validateTreePath(path); err != nil {
-		fmt.Fprintf(stdio.Err, "cat: %v\n", err)
-		return 2
-	}
-
-	commit, err := resolveCommitFromIDOrRev(ctx, gr, revOrID)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "cat: resolve commit: %v\n", err)
-		return 1
-	}
-
-	res, err := gr.RunGit(ctx, nil, "show", commit+":"+path)
-	if err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	fmt.Fprint(stdio.Out, res.Stdout)
-	return 0
-}
-
-func cmdApply(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stdio.Err, "apply: expected <id>")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	id := fs.Arg(0)
-	commit, err := resolveCommit(ctx, gr, vwt.PatchRef(id))
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "apply: unknown patch id: %s\n", id)
-		return 1
-	}
-	base, err := commitParent(ctx, gr, commit)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "apply: %v\n", err)
-		return 1
-	}
-
-	diffRes, err := gr.RunGit(ctx, nil, "diff",
-		"--no-color",
-		"--binary",
-		"--full-index",
-		"--no-renames",
-		"--no-ext-diff",
-		"--no-textconv",
-		base, commit,
-	)
-	if err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	if strings.TrimSpace(diffRes.Stdout) == "" {
-		return 0
-	}
-
-	if _, err := gr.RunGit(ctx, strings.NewReader(diffRes.Stdout), "apply", "--whitespace=nowarn", "--recount"); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	return 0
-}
-
-func cmdDrop(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("drop", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stdio.Err, "drop: expected <id>")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	id := fs.Arg(0)
-	ref := vwt.PatchRef(id)
-	commit, err := resolveCommit(ctx, gr, ref)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "drop: unknown patch id: %s\n", id)
-		return 1
-	}
-	// Guarded delete: only delete if ref still points at the commit we resolved.
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-d", "-m", "vwt drop "+id, ref, commit); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	return 0
-}
-
-func cmdSnapshot(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	msgFlag := fs.String("m", "", "Snapshot message")
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if fs.NArg() != 0 {
-		fmt.Fprintln(stdio.Err, "snapshot: no arguments")
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-
-	snapID, err := vwtGenerateID(time.Now())
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: generate id: %v\n", err)
-		return 1
-	}
-	ref := vwt.SnapshotRef(snapID)
-	if err := checkRefFormat(ctx, gr, ref); err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: invalid ref %q: %v\n", ref, err)
-		return 2
-	}
-	exists, err := refExists(ctx, gr, ref)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: check existing ref: %v\n", err)
-		return 1
-	}
-	if exists {
-		fmt.Fprintf(stdio.Err, "snapshot: id already exists: %s\n", snapID)
-		return 1
-	}
-
-	headCommit, headErr := resolveCommit(ctx, gr, "HEAD")
-	headTree := ""
-	if headErr == nil {
-		if t, err := resolveTree(ctx, gr, headCommit); err == nil {
-			headTree = t
-		}
-	}
-
-	tmpDir, err := osMkdirTemp("", "vwt-snapshot-")
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: temp dir: %v\n", err)
-		return 1
-	}
-	defer osRemoveAll(tmpDir)
-	idxPath := filepath.Join(tmpDir, "index")
-	msgPath := filepath.Join(tmpDir, "msg")
-	if err := osWriteFile(idxPath, nil, 0o600); err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: temp index: %v\n", err)
-		return 1
-	}
-
-	tmpGit := gr.WithEnv(map[string]string{"GIT_INDEX_FILE": idxPath})
-	if headErr == nil {
-		if _, err := tmpGit.RunGit(ctx, nil, "read-tree", headCommit); err != nil {
-			fmt.Fprintf(stdio.Err, "snapshot: git read-tree: %v\n", err)
-			return 1
-		}
-	} else {
-		if _, err := tmpGit.RunGit(ctx, nil, "read-tree", "--empty"); err != nil {
-			fmt.Fprintf(stdio.Err, "snapshot: git read-tree --empty: %v\n", err)
-			return 1
-		}
-	}
-
-	// Include untracked by default, exclude ignored by default.
-	if _, err := tmpGit.RunGit(ctx, nil, "add", "-A"); err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: git add -A: %v\n", err)
-		return 1
-	}
-	treeRes, err := tmpGit.RunGit(ctx, nil, "write-tree")
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: git write-tree: %v\n", err)
-		return 1
-	}
-	newTree := strings.TrimSpace(treeRes.Stdout)
-	if headTree != "" && newTree == headTree {
-		// Still produce a snapshot commit; users may want a stable base even when clean.
-	}
-
-	now := time.Now().UTC()
-	subject := "vwt snapshot: " + snapID
-	if strings.TrimSpace(*msgFlag) != "" {
-		subject = "vwt snapshot: " + strings.TrimSpace(*msgFlag)
-	}
-	body := buildKV(map[string]string{
-		"vwt-id":           snapID,
-		"vwt-snapshot":     "true",
-		"vwt-head":         headCommit,
-		"vwt-created-at":   now.Format(time.RFC3339),
-		"vwt-tool":         "git-vwt",
-		"vwt-tool-version": "(dev)",
-	})
-	msg := subject + "\n\n" + body + "\n"
-	if err := osWriteFile(msgPath, []byte(msg), 0o600); err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: write message: %v\n", err)
-		return 1
-	}
-
-	commitArgs := []string{"commit-tree", newTree, "-F", msgPath}
-	if headErr == nil {
-		commitArgs = append(commitArgs, "-p", headCommit)
-	}
-	commitGit := tmpGit.WithEnv(map[string]string{
-		"GIT_AUTHOR_NAME":     "vwt",
-		"GIT_AUTHOR_EMAIL":    "vwt@local",
-		"GIT_COMMITTER_NAME":  "vwt",
-		"GIT_COMMITTER_EMAIL": "vwt@local",
-		"GIT_AUTHOR_DATE":     now.Format(time.RFC3339),
-		"GIT_COMMITTER_DATE":  now.Format(time.RFC3339),
-	})
-	commitRes, err := commitGit.RunGit(ctx, nil, commitArgs...)
-	if err != nil {
-		fmt.Fprintf(stdio.Err, "snapshot: git commit-tree: %v\n", err)
-		return 1
-	}
-	commit := strings.TrimSpace(commitRes.Stdout)
-	// Create ref atomically (no clobber) by requiring an all-zero old value.
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt snapshot "+snapID, ref, commit, zeroOID); err != nil {
-		if exists, exErr := refExists(ctx, gr, ref); exErr == nil && exists {
-			fmt.Fprintf(stdio.Err, "snapshot: id already exists: %s\n", snapID)
-			return 1
-		}
-		fmt.Fprintf(stdio.Err, "snapshot: git update-ref: %v\n", err)
-		return 1
-	}
-
-	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", snapID, commit, headCommit)
-	return 0
-}
-
-func cmdGC(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
-	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
-	fs.SetOutput(stdio.Err)
-	keepDays := fs.Int("keep-days", 0, "Delete patches older than N days (0 = keep all)")
-	dryRun := fs.Bool("dry-run", false, "Print what would be deleted")
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if err := ensureRepo(ctx, gr); err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 2
-	}
-	if *keepDays <= 0 {
-		// No-op by default.
-		return 0
-	}
-
-	// Best-effort: delete patch refs with committerdate older than keep-days.
-	cutoff := time.Now().Add(-time.Duration(*keepDays) * 24 * time.Hour)
-	res, err := gr.RunGit(ctx, nil, "for-each-ref", vwt.PatchRefPrefix, "--format=%(refname)\t%(objectname)\t%(committerdate:unix)")
-	if err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	out := strings.TrimSpace(res.Stdout)
-	if out == "" {
-		return 0
-	}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		ref := parts[0]
-		oid := parts[1]
-		unixStr := parts[2]
-		sec, err := parseInt64(unixStr)
-		if err != nil {
-			continue
-		}
-		t := time.Unix(sec, 0)
-		if t.Before(cutoff) {
-			if *dryRun {
-				fmt.Fprintf(stdio.Out, "would drop %s\n", ref)
-				continue
-			}
-			// Guarded delete: only delete if ref still points at the oid we listed.
-			if _, err := gr.RunGit(ctx, nil, "update-ref", "-d", "-m", "vwt gc", ref, oid); err != nil {
-				fmt.Fprintf(stdio.Err, "gc: drop %s: %v\n", ref, err)
-				return 1
-			}
-		}
-	}
-	return 0
-}
-
 func commitParent(ctx context.Context, gr gitx.Runner, commit string) (string, error) {
 	res, err := gr.RunGit(ctx, nil, "rev-list", "--parents", "-n", "1", commit)
 	if err != nil {
@@ -1034,23 +178,9 @@ func commitParent(ctx context.Context, gr gitx.Runner, commit string) (string, e
 	}
 	toks := strings.Fields(res.Stdout)
 	if len(toks) < 2 {
-		return "", fmt.Errorf("commit has no parent (expected base parent): %s", commit)
+		return "", fmt.Errorf("commit has no parent (expected workspace base): %s", commit)
 	}
 	return toks[1], nil
-}
-
-func resolveCommitFromIDOrRev(ctx context.Context, gr gitx.Runner, idOrRev string) (string, error) {
-	idOrRev = strings.TrimSpace(idOrRev)
-	if idOrRev == "" {
-		return "", errors.New("empty")
-	}
-	if c, err := resolveCommit(ctx, gr, vwt.PatchRef(idOrRev)); err == nil {
-		return c, nil
-	}
-	if c, err := resolveCommit(ctx, gr, vwt.SnapshotRef(idOrRev)); err == nil {
-		return c, nil
-	}
-	return resolveCommit(ctx, gr, idOrRev)
 }
 
 func validateTreePath(p string) error {
@@ -1081,58 +211,799 @@ func validateTreePath(p string) error {
 	return nil
 }
 
-func shortSHA(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > 12 {
-		return s[:12]
-	}
-	return s
+type workspace struct {
+	Name string
+	Ref  string
+	Head string
+	Base string
 }
 
-func buildKV(kv map[string]string) string {
-	// Keep stable order.
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
+func wsRef(name string) string {
+	return vwt.WorkspaceRef(name)
+}
+
+func isDirty(ctx context.Context, gr gitx.Runner) (bool, error) {
+	res, err := gr.RunGit(ctx, nil, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return false, err
 	}
-	sortStrings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		v := strings.TrimSpace(kv[k])
-		if v == "" {
+	return strings.TrimSpace(res.Stdout) != "", nil
+}
+
+func ensureWorkspace(ctx context.Context, gr gitx.Runner, name, agent, baseArg string) (workspace, error) {
+	ref := wsRef(name)
+	if err := checkRefFormat(ctx, gr, ref); err != nil {
+		return workspace{}, fmt.Errorf("invalid workspace name %q: %w", name, err)
+	}
+
+	exists, err := refExists(ctx, gr, ref)
+	if err != nil {
+		return workspace{}, err
+	}
+	if exists {
+		head, err := resolveCommit(ctx, gr, ref)
+		if err != nil {
+			return workspace{}, err
+		}
+		base, err := commitParent(ctx, gr, head)
+		if err != nil {
+			return workspace{}, err
+		}
+		return workspace{Name: name, Ref: ref, Head: head, Base: base}, nil
+	}
+
+	baseCommit, baseTree, err := selectBase(ctx, gr, name, agent, baseArg)
+	if err != nil {
+		return workspace{}, err
+	}
+
+	head, err := commitTree(ctx, gr, agent, baseTree, []string{baseCommit}, "vwt: ws "+name, "")
+	if err != nil {
+		return workspace{}, err
+	}
+
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt open "+name, ref, head, zeroOID); err != nil {
+		return workspace{}, err
+	}
+	return workspace{Name: name, Ref: ref, Head: head, Base: baseCommit}, nil
+}
+
+func selectBase(ctx context.Context, gr gitx.Runner, wsName, agent, baseArg string) (baseCommit string, baseTree string, err error) {
+	baseArg = strings.TrimSpace(baseArg)
+	if baseArg != "" && baseArg != "auto" {
+		c, err := resolveCommit(ctx, gr, baseArg)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve base commit: %w", err)
+		}
+		t, err := resolveTree(ctx, gr, c)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve base tree: %w", err)
+		}
+		return c, t, nil
+	}
+
+	headCommit, headErr := resolveCommit(ctx, gr, "HEAD")
+	if headErr == nil {
+		dirty, err := isDirty(ctx, gr)
+		if err != nil {
+			return "", "", err
+		}
+		if !dirty {
+			t, err := resolveTree(ctx, gr, headCommit)
+			if err != nil {
+				return "", "", err
+			}
+			return headCommit, t, nil
+		}
+	}
+
+	// Dirty repo (or no HEAD): snapshot the working directory.
+	parent := ""
+	if headErr == nil {
+		parent = headCommit
+	}
+	snapCommit, snapTree, err := snapshotWorkdir(ctx, gr, agent, wsName, parent)
+	if err != nil {
+		return "", "", err
+	}
+	return snapCommit, snapTree, nil
+}
+
+func snapshotWorkdir(ctx context.Context, gr gitx.Runner, agent, wsName, parentCommit string) (commit string, tree string, err error) {
+	tmpDir, err := os.MkdirTemp("", "vwt-snapshot-")
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	idxPath := filepath.Join(tmpDir, "index")
+	if err := os.WriteFile(idxPath, nil, 0o600); err != nil {
+		return "", "", err
+	}
+
+	tmpGit := gr.WithEnv(map[string]string{"GIT_INDEX_FILE": idxPath})
+	if parentCommit != "" {
+		if _, err := tmpGit.RunGit(ctx, nil, "read-tree", parentCommit); err != nil {
+			return "", "", err
+		}
+	} else {
+		if _, err := tmpGit.RunGit(ctx, nil, "read-tree", "--empty"); err != nil {
+			return "", "", err
+		}
+	}
+
+	// Include untracked by default, exclude ignored by default.
+	if _, err := tmpGit.RunGit(ctx, nil, "add", "-A"); err != nil {
+		return "", "", err
+	}
+	wr, err := tmpGit.RunGit(ctx, nil, "write-tree")
+	if err != nil {
+		return "", "", err
+	}
+	tree = strings.TrimSpace(wr.Stdout)
+
+	parents := []string{}
+	if parentCommit != "" {
+		parents = []string{parentCommit}
+	}
+	subject := "vwt: snapshot for ws " + wsName
+	body := ""
+	commit, err = commitTree(ctx, gr, agent, tree, parents, subject, body)
+	if err != nil {
+		return "", "", err
+	}
+	return commit, tree, nil
+}
+
+func commitTree(ctx context.Context, gr gitx.Runner, agent, tree string, parents []string, subject, body string) (string, error) {
+	tree = strings.TrimSpace(tree)
+	if tree == "" {
+		return "", errors.New("empty tree")
+	}
+
+	now := time.Now().UTC()
+	authorName := "vwt"
+	if strings.TrimSpace(agent) != "" {
+		authorName = strings.TrimSpace(agent)
+	}
+
+	commitGit := gr.WithEnv(map[string]string{
+		"GIT_AUTHOR_NAME":     authorName,
+		"GIT_AUTHOR_EMAIL":    "vwt@local",
+		"GIT_COMMITTER_NAME":  "vwt",
+		"GIT_COMMITTER_EMAIL": "vwt@local",
+		"GIT_AUTHOR_DATE":     now.Format(time.RFC3339),
+		"GIT_COMMITTER_DATE":  now.Format(time.RFC3339),
+	})
+
+	args := []string{"commit-tree", tree}
+	for _, p := range parents {
+		p = strings.TrimSpace(p)
+		if p == "" {
 			continue
 		}
-		b.WriteString(k)
-		b.WriteString(": ")
-		b.WriteString(v)
-		b.WriteByte('\n')
+		args = append(args, "-p", p)
 	}
-	return strings.TrimRight(b.String(), "\n")
+	if strings.TrimSpace(subject) != "" {
+		args = append(args, "-m", subject)
+	}
+	if strings.TrimSpace(body) != "" {
+		args = append(args, "-m", body)
+	}
+
+	res, err := commitGit.RunGit(ctx, nil, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(res.Stdout), nil
 }
 
-func sortStrings(ss []string) {
-	// Tiny local insertion sort to avoid importing sort in main.
-	for i := 1; i < len(ss); i++ {
-		j := i
-		for j > 0 && ss[j-1] > ss[j] {
-			ss[j-1], ss[j] = ss[j], ss[j-1]
-			j--
-		}
+func cmdOpen(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("open", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	baseArg := fs.String("base", "auto", "Base commit to view (auto = snapshot if dirty, else HEAD)")
+	if err := fs.Parse(argv); err != nil {
+		return 2
 	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stdio.Err, "open: no arguments")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, *baseArg)
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "open: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", ws.Name, ws.Head, ws.Base)
+	return 0
 }
 
-func parseInt64(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, errors.New("empty")
+func cmdInfo(ctx context.Context, gr gitx.Runner, wsName string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("info", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
 	}
-	var n int64
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("not a number: %q", s)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stdio.Err, "info: no arguments")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	ref := wsRef(wsName)
+	exists, err := refExists(ctx, gr, ref)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	if !exists {
+		fmt.Fprintf(stdio.Err, "workspace not found: %s\n", wsName)
+		return 1
+	}
+	head, err := resolveCommit(ctx, gr, ref)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	base, err := commitParent(ctx, gr, head)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", wsName, head, base)
+	return 0
+}
+
+func cmdRead(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("read", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stdio.Err, "read: expected <path>")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	path := strings.TrimSpace(fs.Arg(0))
+	if err := validateTreePath(path); err != nil {
+		fmt.Fprintf(stdio.Err, "read: %v\n", err)
+		return 2
+	}
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "read: %v\n", err)
+		return 1
+	}
+	res, err := gr.RunGit(ctx, nil, "show", ws.Head+":"+path)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	fmt.Fprint(stdio.Out, res.Stdout)
+	return 0
+}
+
+func cmdWrite(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("write", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 && fs.NArg() != 2 {
+		fmt.Fprintln(stdio.Err, "write: expected <path> [<src-file>]")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	path := strings.TrimSpace(fs.Arg(0))
+	if err := validateTreePath(path); err != nil {
+		fmt.Fprintf(stdio.Err, "write: %v\n", err)
+		return 2
+	}
+
+	var r io.Reader = stdio.In
+	if fs.NArg() == 2 {
+		p := fs.Arg(1)
+		f, err := os.Open(p)
+		if err != nil {
+			fmt.Fprintf(stdio.Err, "write: open %s: %v\n", p, err)
+			return 1
 		}
-		n = n*10 + int64(c-'0')
+		defer f.Close()
+		r = f
 	}
-	return n, nil
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "write: %v\n", err)
+		return 1
+	}
+
+	newHead, err := wsWriteBlob(ctx, gr, ws, agent, path, r)
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "write: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", ws.Name, newHead, ws.Base)
+	return 0
+}
+
+func cmdRemove(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stdio.Err, "rm: expected <path>")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	path := strings.TrimSpace(fs.Arg(0))
+	if err := validateTreePath(path); err != nil {
+		fmt.Fprintf(stdio.Err, "rm: %v\n", err)
+		return 2
+	}
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "rm: %v\n", err)
+		return 1
+	}
+
+	newHead, err := wsRemovePath(ctx, gr, ws, agent, path)
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "rm: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", ws.Name, newHead, ws.Base)
+	return 0
+}
+
+func cmdMove(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("mv", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 2 {
+		fmt.Fprintln(stdio.Err, "mv: expected <from> <to>")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	from := strings.TrimSpace(fs.Arg(0))
+	to := strings.TrimSpace(fs.Arg(1))
+	if err := validateTreePath(from); err != nil {
+		fmt.Fprintf(stdio.Err, "mv: %v\n", err)
+		return 2
+	}
+	if err := validateTreePath(to); err != nil {
+		fmt.Fprintf(stdio.Err, "mv: %v\n", err)
+		return 2
+	}
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "mv: %v\n", err)
+		return 1
+	}
+
+	newHead, err := wsMovePath(ctx, gr, ws, agent, from, to)
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "mv: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdio.Out, "%s\t%s\t%s\n", ws.Name, newHead, ws.Base)
+	return 0
+}
+
+func cmdListDir(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stdio.Err, "ls: expected [path]")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	path := ""
+	if fs.NArg() == 1 {
+		path = strings.TrimSpace(fs.Arg(0))
+		if path != "" && path != "." {
+			if err := validateTreePath(path); err != nil {
+				fmt.Fprintf(stdio.Err, "ls: %v\n", err)
+				return 2
+			}
+		}
+	}
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "ls: %v\n", err)
+		return 1
+	}
+
+	if path == "" || path == "." {
+		res, err := gr.RunGit(ctx, nil, "ls-tree", "--name-only", ws.Head)
+		if err != nil {
+			fmt.Fprintln(stdio.Err, err)
+			return 1
+		}
+		fmt.Fprint(stdio.Out, res.Stdout)
+		return 0
+	}
+
+	objType, err := catFileType(ctx, gr, ws.Head+":"+path)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	if objType != "tree" {
+		fmt.Fprintln(stdio.Out, path)
+		return 0
+	}
+
+	res, err := gr.RunGit(ctx, nil, "ls-tree", "--name-only", ws.Head+":"+path)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	fmt.Fprint(stdio.Out, res.Stdout)
+	return 0
+}
+
+func cmdSearch(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 {
+		fmt.Fprintln(stdio.Err, "search: expected <pattern> [-- <pathspec>...]")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	pattern := fs.Arg(0)
+	pathspec := fs.Args()[1:]
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "search: %v\n", err)
+		return 1
+	}
+
+	args := []string{"grep", "--no-color", "-n", "--full-name", pattern, ws.Head, "--"}
+	args = append(args, pathspec...)
+	res, err := gr.RunGit(ctx, nil, args...)
+	if err != nil {
+		// git grep exit 1 means no matches; treat as success.
+		if res.ExitCode == 1 {
+			return 0
+		}
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	fmt.Fprint(stdio.Out, res.Stdout)
+	return 0
+}
+
+func cmdPatch(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("patch", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stdio.Err, "patch: no arguments")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "patch: %v\n", err)
+		return 1
+	}
+	res, err := gitDiff(ctx, gr, ws.Base, ws.Head)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	fmt.Fprint(stdio.Out, res)
+	return 0
+}
+
+func cmdApply(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stdio.Err, "apply: no arguments")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	ws, err := ensureWorkspace(ctx, gr, wsName, agent, "auto")
+	if err != nil {
+		fmt.Fprintf(stdio.Err, "apply: %v\n", err)
+		return 1
+	}
+	diff, err := gitDiff(ctx, gr, ws.Base, ws.Head)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	if strings.TrimSpace(diff) == "" {
+		return 0
+	}
+	if _, err := gr.RunGit(ctx, strings.NewReader(diff), "apply", "--whitespace=nowarn", "--recount"); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	return 0
+}
+
+func cmdClose(ctx context.Context, gr gitx.Runner, wsName string, argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("close", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stdio.Err, "close: no arguments")
+		return 2
+	}
+	if err := ensureRepo(ctx, gr); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 2
+	}
+
+	ref := wsRef(wsName)
+	exists, err := refExists(ctx, gr, ref)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	if !exists {
+		return 0
+	}
+	head, err := resolveCommit(ctx, gr, ref)
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-d", "-m", "vwt close "+wsName, ref, head); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	return 0
+}
+
+func gitDiff(ctx context.Context, gr gitx.Runner, base, head string) (string, error) {
+	res, err := gr.RunGit(ctx, nil, "diff",
+		"--no-color",
+		"--binary",
+		"--full-index",
+		"--no-renames",
+		"--no-ext-diff",
+		"--no-textconv",
+		base, head,
+	)
+	if err != nil {
+		return "", err
+	}
+	return res.Stdout, nil
+}
+
+func catFileType(ctx context.Context, gr gitx.Runner, revObj string) (string, error) {
+	res, err := gr.RunGit(ctx, nil, "cat-file", "-t", revObj)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(res.Stdout), nil
+}
+
+func lsTreeEntry(ctx context.Context, gr gitx.Runner, commit, path string) (mode, typ, oid string, ok bool, err error) {
+	res, err := gr.RunGit(ctx, nil, "ls-tree", commit, "--", path)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	line := strings.TrimSpace(res.Stdout)
+	if line == "" {
+		return "", "", "", false, nil
+	}
+	// Format: <mode> <type> <oid>\t<path>
+	parts := strings.SplitN(line, "\t", 2)
+	if len(parts) != 2 {
+		return "", "", "", false, fmt.Errorf("unexpected ls-tree output: %q", line)
+	}
+	meta := strings.Fields(parts[0])
+	if len(meta) < 3 {
+		return "", "", "", false, fmt.Errorf("unexpected ls-tree meta: %q", parts[0])
+	}
+	return meta[0], meta[1], meta[2], true, nil
+}
+
+func wsWriteBlob(ctx context.Context, gr gitx.Runner, ws workspace, agent, path string, r io.Reader) (string, error) {
+	mode, _, _, exists, err := lsTreeEntry(ctx, gr, ws.Head, path)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		mode = "100644"
+	}
+
+	// Write blob.
+	hashRes, err := gr.RunGit(ctx, r, "hash-object", "-w", "--stdin")
+	if err != nil {
+		return "", err
+	}
+	blobOID := strings.TrimSpace(hashRes.Stdout)
+
+	oldTree, err := resolveTree(ctx, gr, ws.Head)
+	if err != nil {
+		return "", err
+	}
+
+	newTree, err := rewriteTree(ctx, gr, ws.Head, func(tmpGit gitx.Runner) error {
+		_, err := tmpGit.RunGit(ctx, nil, "update-index", "--add", "--cacheinfo", mode, blobOID, path)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(newTree) == strings.TrimSpace(oldTree) {
+		return ws.Head, nil
+	}
+
+	newHead, err := commitTree(ctx, gr, agent, newTree, []string{ws.Base}, "vwt: write "+path, "")
+	if err != nil {
+		return "", err
+	}
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt write "+path, ws.Ref, newHead, ws.Head); err != nil {
+		return "", err
+	}
+	return newHead, nil
+}
+
+func wsRemovePath(ctx context.Context, gr gitx.Runner, ws workspace, agent, path string) (string, error) {
+	oldTree, err := resolveTree(ctx, gr, ws.Head)
+	if err != nil {
+		return "", err
+	}
+
+	newTree, err := rewriteTree(ctx, gr, ws.Head, func(tmpGit gitx.Runner) error {
+		_, err := tmpGit.RunGit(ctx, nil, "update-index", "--remove", "--", path)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(newTree) == strings.TrimSpace(oldTree) {
+		return ws.Head, nil
+	}
+
+	newHead, err := commitTree(ctx, gr, agent, newTree, []string{ws.Base}, "vwt: rm "+path, "")
+	if err != nil {
+		return "", err
+	}
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt rm "+path, ws.Ref, newHead, ws.Head); err != nil {
+		return "", err
+	}
+	return newHead, nil
+}
+
+func wsMovePath(ctx context.Context, gr gitx.Runner, ws workspace, agent, from, to string) (string, error) {
+	mode, typ, oid, ok, err := lsTreeEntry(ctx, gr, ws.Head, from)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("source path not found: %s", from)
+	}
+	if typ == "tree" {
+		return "", fmt.Errorf("mv of directories is not supported: %s", from)
+	}
+	if _, _, _, ok, err := lsTreeEntry(ctx, gr, ws.Head, to); err != nil {
+		return "", err
+	} else if ok {
+		return "", fmt.Errorf("destination already exists: %s", to)
+	}
+
+	oldTree, err := resolveTree(ctx, gr, ws.Head)
+	if err != nil {
+		return "", err
+	}
+
+	newTree, err := rewriteTree(ctx, gr, ws.Head, func(tmpGit gitx.Runner) error {
+		if _, err := tmpGit.RunGit(ctx, nil, "update-index", "--remove", "--", from); err != nil {
+			return err
+		}
+		_, err := tmpGit.RunGit(ctx, nil, "update-index", "--add", "--cacheinfo", mode, oid, to)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(newTree) == strings.TrimSpace(oldTree) {
+		return ws.Head, nil
+	}
+
+	newHead, err := commitTree(ctx, gr, agent, newTree, []string{ws.Base}, "vwt: mv "+from+" -> "+to, "")
+	if err != nil {
+		return "", err
+	}
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt mv "+from, ws.Ref, newHead, ws.Head); err != nil {
+		return "", err
+	}
+	return newHead, nil
+}
+
+func rewriteTree(ctx context.Context, gr gitx.Runner, fromCommit string, mutate func(tmpGit gitx.Runner) error) (string, error) {
+	tmpDir, err := os.MkdirTemp("", "vwt-index-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	idxPath := filepath.Join(tmpDir, "index")
+	if err := os.WriteFile(idxPath, nil, 0o600); err != nil {
+		return "", err
+	}
+
+	tmpGit := gr.WithEnv(map[string]string{"GIT_INDEX_FILE": idxPath})
+	if _, err := tmpGit.RunGit(ctx, nil, "read-tree", fromCommit); err != nil {
+		return "", err
+	}
+	if err := mutate(tmpGit); err != nil {
+		return "", err
+	}
+	wr, err := tmpGit.RunGit(ctx, nil, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(wr.Stdout), nil
 }
