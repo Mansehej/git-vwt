@@ -62,11 +62,11 @@ func ExtractDiff(in []byte) ([]byte, error) {
 func normalizeDiff(in []byte) []byte {
 	// Ensure patch parses reliably:
 	// - normalize CRLF to LF
-	// - remove extra leading/trailing blank newlines
+	// - remove extra leading blank newlines
 	// - ensure the final byte is a newline (git apply treats missing final newline as a corrupt patch)
 	out := bytes.ReplaceAll(in, []byte("\r\n"), []byte("\n"))
 	out = bytes.ReplaceAll(out, []byte("\r"), []byte("\n"))
-	out = bytes.Trim(out, "\n")
+	out = bytes.TrimLeft(out, "\n")
 	if len(out) == 0 {
 		return out
 	}
@@ -81,44 +81,44 @@ func PatchSHA256Hex(diff []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-type PatchPathPolicy struct {
-	AllowDotGit bool
-}
-
-func ValidatePatchPaths(diff []byte, policy PatchPathPolicy) error {
-	paths := touchedPaths(diff)
+func ValidatePatchPaths(diff []byte) error {
+	paths, err := touchedPaths(diff)
+	if err != nil {
+		return err
+	}
 	for _, p := range paths {
+		p = strings.TrimSpace(p)
 		if p == "" || p == "/dev/null" {
 			continue
 		}
+		if strings.ContainsAny(p, "\x00\r\n") {
+			return fmt.Errorf("refusing patch with invalid path characters: %q", p)
+		}
 
-		// Normalize common prefixes.
+		// Normalize common diff prefixes.
 		if strings.HasPrefix(p, "a/") || strings.HasPrefix(p, "b/") {
 			p = p[2:]
 		}
-		p = strings.TrimPrefix(p, "./")
-		p = strings.TrimPrefix(p, "//")
-
-		// Git may quote paths; try to unquote for checks.
-		p = unquoteMaybe(p)
-
-		if p == ".git" || strings.HasPrefix(p, ".git/") {
-			if policy.AllowDotGit {
-				continue
-			}
-			return fmt.Errorf("refusing patch that touches .git/** (use --allow-dot-git to override)")
+		for strings.HasPrefix(p, "./") {
+			p = strings.TrimPrefix(p, "./")
 		}
+
 		if strings.HasPrefix(p, "/") {
 			return fmt.Errorf("refusing patch with absolute path: %s", p)
 		}
-		if p == ".." || strings.HasPrefix(p, "../") || strings.Contains(p, "/../") {
-			return fmt.Errorf("refusing patch with unsafe path: %s", p)
+		for _, seg := range strings.Split(p, "/") {
+			if seg == ".." {
+				return fmt.Errorf("refusing patch with unsafe path: %s", p)
+			}
+		}
+		if p == ".git" || strings.HasPrefix(p, ".git/") {
+			return fmt.Errorf("refusing patch that touches .git/**")
 		}
 	}
 	return nil
 }
 
-func touchedPaths(diff []byte) []string {
+func touchedPaths(diff []byte) ([]string, error) {
 	// Best-effort scan for file paths in a unified diff.
 	// Primary source: `diff --git a/X b/Y` lines.
 	// Secondary: `--- a/X` and `+++ b/Y` lines.
@@ -134,22 +134,90 @@ func touchedPaths(diff []byte) []string {
 		line := s.Text()
 		if strings.HasPrefix(line, "diff --git ") {
 			// diff --git a/foo b/foo
-			fields := strings.Fields(line)
-			if len(fields) >= 4 {
-				addUnique(&out, seen, fields[2])
-				addUnique(&out, seen, fields[3])
+			toks, err := scanPatchTokens(line[len("diff --git "):], 2)
+			if err != nil {
+				return nil, err
 			}
+			addUnique(&out, seen, toks[0])
+			addUnique(&out, seen, toks[1])
 			continue
 		}
 		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				addUnique(&out, seen, fields[1])
+			toks, err := scanPatchTokens(line[4:], 1)
+			if err != nil {
+				return nil, err
 			}
+			addUnique(&out, seen, toks[0])
 			continue
 		}
 	}
-	return out
+	if err := s.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func scanPatchTokens(s string, n int) ([]string, error) {
+	// Parse N header tokens from a patch header line.
+	// Supports Git-style double-quoted C-escaped strings.
+	toks := make([]string, 0, n)
+	i := 0
+	skipWS := func() {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+	}
+
+	for len(toks) < n {
+		skipWS()
+		if i >= len(s) {
+			break
+		}
+
+		if s[i] == '"' {
+			start := i
+			i++ // opening quote
+			closed := false
+			for i < len(s) {
+				if s[i] == '\\' {
+					if i+1 >= len(s) {
+						return nil, fmt.Errorf("unterminated escape in quoted token: %q", s[start:])
+					}
+					i += 2
+					continue
+				}
+				if s[i] == '"' {
+					i++
+					raw := s[start:i]
+					u, err := strconv.Unquote(raw)
+					if err != nil {
+						return nil, fmt.Errorf("invalid quoted token %q: %w", raw, err)
+					}
+					toks = append(toks, u)
+					closed = true
+					break
+				}
+				i++
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated quoted token: %q", s[start:])
+			}
+			continue
+		}
+
+		start := i
+		for i < len(s) && s[i] != ' ' && s[i] != '\t' {
+			i++
+		}
+		tok := s[start:i]
+		tok = unquoteMaybe(tok)
+		toks = append(toks, tok)
+	}
+
+	if len(toks) < n {
+		return nil, fmt.Errorf("expected %d token(s), found %d", n, len(toks))
+	}
+	return toks, nil
 }
 
 func addUnique(out *[]string, seen map[string]struct{}, p string) {

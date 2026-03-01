@@ -6,7 +6,7 @@ git-vwt is a Git-native "patch inbox" that stores agent-produced unified diffs a
 
 - Diff-only producers: when asked to propose changes, return a unified diff; do not write/edit files directly.
 - Read-only commands: `git vwt import/compose/list/show/diff/export/cat/snapshot/gc` must not modify the user's working tree.
-- Path safety: reject patches touching `.git/**` by default (only allow with `git vwt import --allow-dot-git`).
+- Path safety: reject patches touching `.git/**`.
 - Git safety: do not edit git config; do not use destructive git commands.
 
 ## Data Model (How Patches Are Stored)

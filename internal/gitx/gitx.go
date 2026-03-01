@@ -54,7 +54,9 @@ func (r Runner) RunGit(ctx context.Context, stdin io.Reader, args ...string) (Re
 	if errors.As(err, &exitErr) {
 		res.ExitCode = exitErr.ExitCode()
 	} else {
-		res.ExitCode = 1
+		// The process did not exit cleanly (e.g., exec/chdir failure, context
+		// cancellation before start). Avoid conflating this with a real exit status.
+		res.ExitCode = -1
 	}
 	return res, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(res.Stderr))
 }

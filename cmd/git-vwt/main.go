@@ -16,6 +16,8 @@ import (
 	"git-vwt/internal/vwt"
 )
 
+const zeroOID = "0000000000000000000000000000000000000000"
+
 type IO struct {
 	In  io.Reader
 	Out io.Writer
@@ -156,7 +158,6 @@ func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 	agent := fs.String("agent", "", "Agent name")
 	title := fs.String("title", "", "Title")
 	stdin := fs.Bool("stdin", false, "Read diff from stdin")
-	allowDotGit := fs.Bool("allow-dot-git", false, "Allow patches touching .git/**")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -209,7 +210,7 @@ func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 		fmt.Fprintf(stdio.Err, "import: %v\n", err)
 		return 1
 	}
-	if err := vwt.ValidatePatchPaths(diff, vwt.PatchPathPolicy{AllowDotGit: *allowDotGit}); err != nil {
+	if err := vwt.ValidatePatchPaths(diff); err != nil {
 		fmt.Fprintf(stdio.Err, "import: %v\n", err)
 		return 1
 	}
@@ -332,7 +333,12 @@ func cmdImport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 	}
 	commit := strings.TrimSpace(commitRes.Stdout)
 
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt import "+patchID, ref, commit); err != nil {
+	// Create ref atomically (no clobber) by requiring an all-zero old value.
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt import "+patchID, ref, commit, zeroOID); err != nil {
+		if exists, exErr := refExists(ctx, gr, ref); exErr == nil && exists {
+			fmt.Fprintf(stdio.Err, "import: patch id already exists: %s\n", patchID)
+			return 1
+		}
 		fmt.Fprintf(stdio.Err, "import: git update-ref: %v\n", err)
 		return 1
 	}
@@ -348,7 +354,6 @@ func cmdCompose(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) in
 	id := fs.String("id", "", "Compose id (ref-safe). Auto-generated if omitted")
 	agent := fs.String("agent", "", "Agent name")
 	title := fs.String("title", "", "Title")
-	allowDotGit := fs.Bool("allow-dot-git", false, "Allow patches touching .git/**")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -441,13 +446,21 @@ func cmdCompose(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) in
 			return 1
 		}
 
-		diffRes, err := gr.RunGit(ctx, nil, "diff", "--no-color", patchBase, patchCommit)
+		diffRes, err := gr.RunGit(ctx, nil, "diff",
+			"--no-color",
+			"--binary",
+			"--full-index",
+			"--no-renames",
+			"--no-ext-diff",
+			"--no-textconv",
+			patchBase, patchCommit,
+		)
 		if err != nil {
 			fmt.Fprintf(stdio.Err, "compose: patch %s: git diff: %v\n", pid, err)
 			return 1
 		}
 		d := []byte(diffRes.Stdout)
-		if err := vwt.ValidatePatchPaths(d, vwt.PatchPathPolicy{AllowDotGit: *allowDotGit}); err != nil {
+		if err := vwt.ValidatePatchPaths(d); err != nil {
 			fmt.Fprintf(stdio.Err, "compose: patch %s: %v\n", pid, err)
 			return 1
 		}
@@ -516,7 +529,12 @@ func cmdCompose(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) in
 	}
 	commit := strings.TrimSpace(commitRes.Stdout)
 
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt compose "+composeID, ref, commit); err != nil {
+	// Create ref atomically (no clobber) by requiring an all-zero old value.
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt compose "+composeID, ref, commit, zeroOID); err != nil {
+		if exists, exErr := refExists(ctx, gr, ref); exErr == nil && exists {
+			fmt.Fprintf(stdio.Err, "compose: id already exists: %s\n", composeID)
+			return 1
+		}
 		fmt.Fprintf(stdio.Err, "compose: git update-ref: %v\n", err)
 		return 1
 	}
@@ -631,7 +649,15 @@ func cmdDiff(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
 		fmt.Fprintf(stdio.Err, "diff: %v\n", err)
 		return 1
 	}
-	diffRes, err := gr.RunGit(ctx, nil, "diff", "--no-color", base, commit)
+	diffRes, err := gr.RunGit(ctx, nil, "diff",
+		"--no-color",
+		"--binary",
+		"--full-index",
+		"--no-renames",
+		"--no-ext-diff",
+		"--no-textconv",
+		base, commit,
+	)
 	if err != nil {
 		fmt.Fprintln(stdio.Err, err)
 		return 1
@@ -677,7 +703,6 @@ func cmdExport(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int
 func cmdCat(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
 	fs := flag.NewFlagSet("cat", flag.ContinueOnError)
 	fs.SetOutput(stdio.Err)
-	allowDotGit := fs.Bool("allow-dot-git", false, "Allow reading .git/** paths")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -702,7 +727,7 @@ func cmdCat(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
 		fmt.Fprintln(stdio.Err, "cat: expected <path> OR <id|rev> <path>")
 		return 2
 	}
-	if err := validateTreePath(path, *allowDotGit); err != nil {
+	if err := validateTreePath(path); err != nil {
 		fmt.Fprintf(stdio.Err, "cat: %v\n", err)
 		return 2
 	}
@@ -748,7 +773,15 @@ func cmdApply(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int 
 		return 1
 	}
 
-	diffRes, err := gr.RunGit(ctx, nil, "diff", "--no-color", "--binary", "--full-index", "--no-renames", base, commit)
+	diffRes, err := gr.RunGit(ctx, nil, "diff",
+		"--no-color",
+		"--binary",
+		"--full-index",
+		"--no-renames",
+		"--no-ext-diff",
+		"--no-textconv",
+		base, commit,
+	)
 	if err != nil {
 		fmt.Fprintln(stdio.Err, err)
 		return 1
@@ -780,16 +813,13 @@ func cmdDrop(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
 	}
 	id := fs.Arg(0)
 	ref := vwt.PatchRef(id)
-	exists, err := refExists(ctx, gr, ref)
+	commit, err := resolveCommit(ctx, gr, ref)
 	if err != nil {
-		fmt.Fprintln(stdio.Err, err)
-		return 1
-	}
-	if !exists {
 		fmt.Fprintf(stdio.Err, "drop: unknown patch id: %s\n", id)
 		return 1
 	}
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-d", "-m", "vwt drop "+id, ref); err != nil {
+	// Guarded delete: only delete if ref still points at the commit we resolved.
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-d", "-m", "vwt drop "+id, ref, commit); err != nil {
 		fmt.Fprintln(stdio.Err, err)
 		return 1
 	}
@@ -918,7 +948,12 @@ func cmdSnapshot(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) i
 		return 1
 	}
 	commit := strings.TrimSpace(commitRes.Stdout)
-	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt snapshot "+snapID, ref, commit); err != nil {
+	// Create ref atomically (no clobber) by requiring an all-zero old value.
+	if _, err := gr.RunGit(ctx, nil, "update-ref", "-m", "vwt snapshot "+snapID, ref, commit, zeroOID); err != nil {
+		if exists, exErr := refExists(ctx, gr, ref); exErr == nil && exists {
+			fmt.Fprintf(stdio.Err, "snapshot: id already exists: %s\n", snapID)
+			return 1
+		}
 		fmt.Fprintf(stdio.Err, "snapshot: git update-ref: %v\n", err)
 		return 1
 	}
@@ -946,7 +981,7 @@ func cmdGC(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
 
 	// Best-effort: delete patch refs with committerdate older than keep-days.
 	cutoff := time.Now().Add(-time.Duration(*keepDays) * 24 * time.Hour)
-	res, err := gr.RunGit(ctx, nil, "for-each-ref", vwt.PatchRefPrefix, "--format=%(refname)\t%(committerdate:unix)")
+	res, err := gr.RunGit(ctx, nil, "for-each-ref", vwt.PatchRefPrefix, "--format=%(refname)\t%(objectname)\t%(committerdate:unix)")
 	if err != nil {
 		fmt.Fprintln(stdio.Err, err)
 		return 1
@@ -956,12 +991,13 @@ func cmdGC(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
 		return 0
 	}
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
 			continue
 		}
 		ref := parts[0]
-		unixStr := parts[1]
+		oid := parts[1]
+		unixStr := parts[2]
 		sec, err := parseInt64(unixStr)
 		if err != nil {
 			continue
@@ -972,7 +1008,8 @@ func cmdGC(ctx context.Context, gr gitx.Runner, argv []string, stdio IO) int {
 				fmt.Fprintf(stdio.Out, "would drop %s\n", ref)
 				continue
 			}
-			if _, err := gr.RunGit(ctx, nil, "update-ref", "-d", "-m", "vwt gc", ref); err != nil {
+			// Guarded delete: only delete if ref still points at the oid we listed.
+			if _, err := gr.RunGit(ctx, nil, "update-ref", "-d", "-m", "vwt gc", ref, oid); err != nil {
 				fmt.Fprintf(stdio.Err, "gc: drop %s: %v\n", ref, err)
 				return 1
 			}
@@ -1007,7 +1044,7 @@ func resolveCommitFromIDOrRev(ctx context.Context, gr gitx.Runner, idOrRev strin
 	return resolveCommit(ctx, gr, idOrRev)
 }
 
-func validateTreePath(p string, allowDotGit bool) error {
+func validateTreePath(p string) error {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return errors.New("empty path")
@@ -1019,10 +1056,7 @@ func validateTreePath(p string, allowDotGit bool) error {
 		return fmt.Errorf("refusing unsafe path: %s", p)
 	}
 	if p == ".git" || strings.HasPrefix(p, ".git/") {
-		if allowDotGit {
-			return nil
-		}
-		return errors.New("refusing path .git/** (use --allow-dot-git to override)")
+		return errors.New("refusing path .git/**")
 	}
 	return nil
 }

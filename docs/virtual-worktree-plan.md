@@ -12,7 +12,7 @@
 - Orchestrator flow: import diff -> inspect -> (optional) test -> apply.
 - Safety invariants:
   - `import/show/diff/list/export` never touch the user's working tree.
-  - Default deny patches touching `.git/**` (override flag optional).
+  - Reject patches touching `.git/**`.
   - No git config edits, no destructive git commands.
 
 ## 2) Data Model
@@ -99,7 +99,7 @@
   - Patch commit diff is correct.
   - `apply` produces expected tree.
   - Snapshots capture dirty state deterministically.
-  - Path safety blocks `.git/**` edits by default.
+  - Path safety blocks `.git/**` edits.
 - Cross-platform CI: macOS, Linux, Windows.
 - Keep runtime dependencies minimal.
 

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"git-vwt/internal/gitx"
 )
 
 func TestImportListDiffExportApplyDrop(t *testing.T) {
@@ -348,6 +350,88 @@ func TestImportBlocksDotGitByDefault(t *testing.T) {
 	})
 	if !strings.Contains(errOut.String(), ".git") {
 		t.Fatalf("expected .git error, got: %q", errOut.String())
+	}
+}
+
+func TestRefExistsDoesNotSwallowRunnerFailure(t *testing.T) {
+	ctx := context.Background()
+	badDir := filepath.Join(t.TempDir(), "does-not-exist")
+	gr := gitx.Runner{Dir: badDir, Env: os.Environ()}
+	ok, err := refExists(ctx, gr, "refs/heads/main")
+	if err == nil {
+		t.Fatalf("expected error, got nil (ok=%v)", ok)
+	}
+	if ok {
+		t.Fatalf("expected ok=false on runner failure")
+	}
+}
+
+func TestComposeHandlesBinaryPatch(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	git(t, dir, "init")
+	git(t, dir, "config", "user.name", "test")
+	git(t, dir, "config", "user.email", "test@example.com")
+	git(t, dir, "config", "commit.gpgsign", "false")
+
+	baseBytes := []byte{0x00, 'a', 'b', 0x00, 'c', 'd', '\n'}
+	if err := os.WriteFile(filepath.Join(dir, "bin.dat"), baseBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "bin.dat")
+	git(t, dir, "commit", "-m", "base")
+	base := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	baseBlob := strings.TrimSpace(git(t, dir, "rev-parse", base+":bin.dat"))
+
+	wantBytes := []byte{0x00, 'x', 'y', 0x00, 'z', '!', '\n'}
+	if err := os.WriteFile(filepath.Join(dir, "bin.dat"), wantBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := git(t, dir, "diff",
+		"--no-color",
+		"--binary",
+		"--full-index",
+		"--no-renames",
+		"--no-ext-diff",
+		"--no-textconv",
+		base,
+	)
+
+	// import pbin
+	importOut, importErr := bytes.Buffer{}, bytes.Buffer{}
+	withChdir(t, dir, func() {
+		code := run(ctx, []string{"import", "--base", base, "--id", "pbin", "--stdin"}, IO{In: strings.NewReader(patch), Out: &importOut, Err: &importErr})
+		if code != 0 {
+			t.Fatalf("import pbin exit=%d stderr=%s", code, importErr.String())
+		}
+	})
+	fields := strings.Split(strings.TrimSpace(importOut.String()), "\t")
+	if len(fields) < 3 {
+		t.Fatalf("unexpected import output: %q", importOut.String())
+	}
+	patchCommit := fields[1]
+	patchBlob := strings.TrimSpace(git(t, dir, "rev-parse", patchCommit+":bin.dat"))
+	if patchBlob == baseBlob {
+		t.Fatalf("expected patch blob to differ from base")
+	}
+
+	// compose cbin
+	composeOut, composeErr := bytes.Buffer{}, bytes.Buffer{}
+	withChdir(t, dir, func() {
+		code := run(ctx, []string{"compose", "--base", base, "--id", "cbin", "pbin"}, IO{In: strings.NewReader(""), Out: &composeOut, Err: &composeErr})
+		if code != 0 {
+			t.Fatalf("compose cbin exit=%d stderr=%s", code, composeErr.String())
+		}
+	})
+	fields = strings.Split(strings.TrimSpace(composeOut.String()), "\t")
+	if len(fields) < 2 {
+		t.Fatalf("unexpected compose output: %q", composeOut.String())
+	}
+	composeCommit := fields[1]
+	composeBlob := strings.TrimSpace(git(t, dir, "rev-parse", composeCommit+":bin.dat"))
+	if composeBlob != patchBlob {
+		t.Fatalf("compose blob mismatch: got=%s want=%s", composeBlob, patchBlob)
 	}
 }
 

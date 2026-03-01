@@ -30,7 +30,7 @@ Put `git-vwt` on your PATH to use as `git vwt ...`.
 ## Safety
 
 - `import/list/show/diff/export` do not touch your working tree.
-- Patches touching `.git/**` are rejected by default (`import --allow-dot-git` overrides).
+- Patches touching `.git/**` are rejected.
 
 ## Skills
 

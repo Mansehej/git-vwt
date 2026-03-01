@@ -11,7 +11,7 @@ You manage a Git-native "patch inbox" workflow using the `git vwt` CLI.
 
 - Diff-only producers: subagents must return unified diffs; they never write files.
 - Read-only commands (`import/compose/list/show/diff/export/cat/snapshot/gc`) must not modify the user's working tree.
-- Default deny patches touching `.git/**`.
+- Reject patches touching `.git/**`.
 
 Unified diff correctness
 - Hunks must use proper unified-diff headers with line ranges (no bare `@@`).
