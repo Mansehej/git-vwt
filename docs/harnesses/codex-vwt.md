@@ -1,64 +1,61 @@
 # Codex + git-vwt
 
-This guide explains how to get subagent-style isolation in Codex using virtual workspaces.
+This guide describes a Codex plan aligned with the OpenCode direction:
 
-## What Codex gives you today
+- explicit opt-in VWT mode per run
+- existing subagents can keep their roles (avoid duplicating role definitions)
+- subagents cannot apply to the working directory
+- only the primary/orchestrator can apply
 
-Codex supports:
+## Recommended pattern: opt-in VWT profile + MCP tools
 
-- skills from `.agents/skills/*/SKILL.md`
-- experimental multi-agent roles
-- sandbox policies and approval policies
-- execution rules (`prefix_rule`) for command allow/prompt/forbid
-- MCP servers (stdio and streamable HTTP)
+Use a dedicated Codex config profile for VWT runs (for example `config-vwt.toml`).
+Start Codex with that profile only when you want VWT behavior.
 
-References:
+Why this is the best practical fit today:
 
-- Skills: https://developers.openai.com/codex/skills
-- Multi-agent: https://developers.openai.com/codex/multi-agent
-- Rules: https://developers.openai.com/codex/rules
-- MCP: https://developers.openai.com/codex/mcp
-- Config reference: https://developers.openai.com/codex/config-reference
+- Codex has no OpenCode-style plugin hook that can transparently reroute all built-in file tools
+- MCP gives a reliable tool boundary (`vwt_read`, `vwt_write`, `vwt_patch`, `vwt_apply`)
+- role-specific configs let you keep apply authority in the primary only
 
-## Recommended architecture (no Codex core changes)
+## Core workflow (parent-child)
 
-1. Skill-enforce VWT workflow
+1. Primary assigns each subagent a workspace name and task.
+2. Subagent edits only through VWT tools in that workspace.
+3. Subagent returns `vwt_patch` output (or patch summary + workspace name).
+4. Primary reviews and calls `vwt_apply`.
 
-- add `.agents/skills/virtual-worktree/SKILL.md`
-- require: do all edits with `git vwt --ws <name> ...`
-- require: return `git vwt --ws <name> patch`
-- require: do not run `git vwt apply` unless explicitly asked
+This preserves the project invariant: only apply mutates the real checkout.
 
-2. Multi-agent role guardrails
+## Workspace naming
 
-- set subagent roles to `sandbox_mode = "read-only"`
-- put VWT requirements in `developer_instructions`
+Codex currently does not expose a guaranteed shell-usable child session ID in all environments.
+Use explicit names assigned by the parent:
 
-3. Allow only the VWT escape hatch
+- `codex-<run>-<role>-<n>`
+- examples: `codex-482-auth-1`, `codex-482-tests-1`
 
-- add a rules file allowing `git vwt` outside sandbox escalation prompts
+Parent prompt contract for each worker:
 
-## Example skill
+- include the exact workspace name
+- require worker to call tools with that name
+- require worker to return patch status before finishing
 
-`./.agents/skills/virtual-worktree/SKILL.md`
+## Guardrails (strict safety)
 
-```markdown
----
-name: virtual-worktree
-description: Use git-vwt virtual workspaces for isolated edits and patch output.
----
+Enforce with configuration, not only prompt text:
 
-Workflow:
-- Never edit files directly in the checkout.
-- Create/open a workspace: `git vwt --ws <WS> open`.
-- Read/write/search only via `git vwt --ws <WS> ...`.
-- Return `git vwt --ws <WS> patch` when done.
-- Do not run `git vwt apply` unless explicitly requested.
-```
+- worker profile: no `vwt_apply` tool
+- worker profile: deny shell `git vwt apply` via rules
+- primary profile: allow `vwt_apply` (optionally with approval prompt)
 
-## Example role config
+If a worker still has shell access, keep `sandbox_mode = "read-only"` to reduce accidental checkout edits.
 
-`.codex/config.toml`
+## Practical config skeleton
+
+Use one shared worker config file, and point existing worker roles to it so you do not duplicate policy.
+
+`.codex/config-vwt.toml`:
 
 ```toml
 [features]
@@ -68,41 +65,66 @@ multi_agent = true
 max_threads = 6
 max_depth = 1
 
-[agents.worker]
-description = "Implementation agent that must use git-vwt workflow"
-config_file = "agents/worker.toml"
+[agents.default]
+config_file = "agents/vwt-worker.toml"
+
+[agents.orchestrator]
+config_file = "agents/vwt-primary.toml"
 ```
 
-`.codex/agents/worker.toml`
+`.codex/agents/vwt-worker.toml`:
 
 ```toml
 sandbox_mode = "read-only"
-developer_instructions = "Use the virtual-worktree skill and do all edits via git vwt."
+developer_instructions = "Use virtual-worktree workflow. Never apply. Return workspace + patch."
+
+# Expose only non-apply MCP VWT tools to workers.
+# (Tool wiring is environment-specific; keep apply out of this profile.)
 ```
 
-## Example rules allowlist
+`.codex/agents/vwt-primary.toml`:
 
-`~/.codex/rules/default.rules`
+```toml
+developer_instructions = "Own workspace assignment, patch review, and apply decisions."
+
+# Expose vwt_apply only here.
+```
+
+`~/.codex/rules/vwt-worker.rules`:
 
 ```python
 prefix_rule(
-    pattern = ["git", "vwt"],
-    decision = "allow",
-    justification = "Allow virtual workspace operations under git-vwt"
+    pattern=["git", "vwt", "apply"],
+    decision="forbid",
+    justification="Workers must not apply to checkout"
 )
 ```
 
-## Workspace naming in multi-agent runs
+`~/.codex/rules/vwt-primary.rules`:
 
-Codex does not currently expose a stable per-subagent ID directly inside shell commands.
-In practice, have the parent assign names explicitly:
+```python
+prefix_rule(
+    pattern=["git", "vwt", "apply"],
+    decision="prompt",
+    justification="Primary controls apply"
+)
+```
 
-- `vwt-auth-fix`
-- `vwt-test-repair`
-- `vwt-docs-pass`
+## MCP tool surface
 
-Then each subagent uses its assigned `--ws` value.
+Use the cross-harness tool shape from `docs/harnesses/cross-harness-mcp.md`:
 
-## Stronger option: MCP server
+- workers: `vwt_read`, `vwt_write`, `vwt_edit`, `vwt_list`, `vwt_search`, `vwt_patch`, `vwt_close`
+- primary only: `vwt_apply`
 
-For better reliability, expose `git-vwt` as an MCP toolset and route edits through MCP tools instead of generic shell.
+Server-side requirements remain mandatory:
+
+- reject unsafe paths (`.git/**`, absolute, traversal)
+- validate workspace names
+- serialize per-workspace writes
+- require explicit apply confirmation
+
+## Fallback (no MCP yet)
+
+You can run shell-only (`git vwt --ws ...`) with the same workspace contract and rules.
+This is workable, but less robust than MCP because file operation boundaries are weaker.
