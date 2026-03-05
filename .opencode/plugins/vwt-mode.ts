@@ -435,6 +435,10 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     return {}
   }
 
+  // Optional: isolate primary sessions too (for multi-process parallelism).
+  // Default behavior (unset): only child/subagent sessions use VWT workspaces.
+  const isolatePrimary = truthyEnv(process.env.OPENCODE_VWT_PRIMARY)
+
   let activeToastShown = false
 
   async function showVwtActiveToast(): Promise<void> {
@@ -674,10 +678,12 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       output.system.push(
         [
           "VWT mode is enabled (OPENCODE_VWT=1).",
-          "- Primary session: file tools edit the working directory (normal OpenCode behavior).",
+          isolatePrimary
+            ? `- Primary sessions are isolated too (OPENCODE_VWT_PRIMARY=1): file tools edit the git-vwt workspace opencode-<sessionID> (this session: ${ws}).`
+            : "- Primary session: file tools edit the working directory (normal OpenCode behavior).",
           `- Subagent sessions: file tools edit an isolated git-vwt workspace named opencode-<sessionID> (this session's workspace would be ${ws}).`,
           "- Subagents must never apply changes to the working directory.",
-          "- To review/apply a subagent workspace from the primary, use vwt_patch/vwt_apply with that subagent sessionID (primary should call vwt_apply, not ask the user to run it).",
+          "- To review/apply a workspace from the primary, use vwt_patch/vwt_apply with that sessionID (primary should call vwt_apply, not ask the user to run it).",
           "- If vwt_apply reports conflicts, resolve conflict markers (<<<<<<< >>>>>>>) in the affected files.",
         ].join("\n"),
       )
@@ -698,7 +704,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
     async "shell.env"(input, output) {
       if (!input.sessionID) return
-      if (!(await isChildSession(input.sessionID))) return
+      if (!isolatePrimary && !(await isChildSession(input.sessionID))) return
       const ws = wsForSession(input.sessionID)
       output.env.VWT_WORKSPACE = ws
       output.env.VWT_AGENT = "opencode"
@@ -721,7 +727,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = await isChildSession(context.sessionID)
+          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
           if (!useVwt) {
             try {
               const st = await fs.stat(abs)
@@ -778,7 +784,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = await isChildSession(context.sessionID)
+          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
           if (useVwt) {
             const ws = wsForSession(context.sessionID)
             await vwtWrite(ws, vwtAuthor(context.agent), context.worktree, rel, args.content)
@@ -812,7 +818,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = await isChildSession(context.sessionID)
+          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
           const ws = wsForSession(context.sessionID)
           const author = vwtAuthor(context.agent)
 
@@ -885,7 +891,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             throw new Error("apply_patch verification failed: no hunks found")
           }
 
-          const useVwt = await isChildSession(context.sessionID)
+          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
           const ws = wsForSession(context.sessionID)
           const author = vwtAuthor(context.agent)
 
@@ -988,7 +994,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { pattern: args.pattern },
           })
 
-          const useVwt = await isChildSession(context.sessionID)
+          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
           if (!useVwt) {
             const cwd = context.worktree
             const searchPath = args.path
@@ -1048,7 +1054,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = await isChildSession(context.sessionID)
+          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
           if (useVwt) {
             return await vwtList(wsForSession(context.sessionID), vwtAuthor(context.agent), context.worktree, rel)
           }
@@ -1075,7 +1081,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { pattern: args.pattern },
           })
 
-          const useVwt = await isChildSession(context.sessionID)
+          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
           if (!useVwt) {
             const baseDir = context.worktree
             const globber = new Bun.Glob(args.pattern)
