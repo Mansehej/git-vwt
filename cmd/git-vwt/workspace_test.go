@@ -229,3 +229,61 @@ func TestWorkspaceBaseIsDirtyWorkingDirectorySnapshot(t *testing.T) {
 		t.Fatalf("unexpected status after apply: %q", status)
 	}
 }
+
+func TestApplyFallsBackToThreeWayAndWritesConflictMarkers(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	git(t, dir, "init")
+	git(t, dir, "config", "user.name", "test")
+	git(t, dir, "config", "user.email", "test@example.com")
+	git(t, dir, "config", "commit.gpgsign", "false")
+
+	mustWrite(t, filepath.Join(dir, "shared.txt"), "HEADER\nLINE=BASE\nFOOTER\n")
+	git(t, dir, "add", "shared.txt")
+	git(t, dir, "commit", "-m", "base")
+
+	ws := "wsconflict"
+
+	// Create a workspace change (theirs).
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "write", "shared.txt"}, IO{In: strings.NewReader("HEADER\nLINE=THEIRS\nFOOTER\n"), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("write exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+	if got := mustRead(t, filepath.Join(dir, "shared.txt")); got != "HEADER\nLINE=BASE\nFOOTER\n" {
+		t.Fatalf("workspace write modified working dir unexpectedly: %q", got)
+	}
+
+	// Modify working directory differently (ours).
+	mustWrite(t, filepath.Join(dir, "shared.txt"), "HEADER\nLINE=OURS\nFOOTER\n")
+	if status := git(t, dir, "status", "--porcelain"); status != " M shared.txt\n" {
+		t.Fatalf("unexpected status before apply: %q", status)
+	}
+
+	// Apply should fall back to three-way and leave conflict markers.
+	{
+		out, errOut := bytes.Buffer{}, bytes.Buffer{}
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "apply"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 1 {
+				t.Fatalf("apply exit=%d (want 1 for conflicts) stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+		})
+	}
+
+	content := mustRead(t, filepath.Join(dir, "shared.txt"))
+	if !strings.Contains(content, "<<<<<<< ours") || !strings.Contains(content, ">>>>>>> theirs") {
+		t.Fatalf("expected conflict markers, got: %q", content)
+	}
+	if !strings.Contains(content, "LINE=OURS") || !strings.Contains(content, "LINE=THEIRS") {
+		t.Fatalf("expected both versions present, got: %q", content)
+	}
+	if cached := strings.TrimSpace(git(t, dir, "diff", "--cached", "--name-only")); cached != "" {
+		t.Fatalf("apply staged changes unexpectedly: %q", cached)
+	}
+}

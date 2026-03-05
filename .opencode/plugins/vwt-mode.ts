@@ -586,10 +586,19 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     return await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} patch`.text()
   }
 
-  async function vwtApply(ws: string, agent: string, cwd: string): Promise<string> {
+  async function vwtApply(
+    ws: string,
+    agent: string,
+    cwd: string,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     await ensureWsOpen(ws, agent, cwd)
     const prefix = await vwtPrefix(cwd)
-    return await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} apply`.text()
+    const res = await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} apply`.nothrow().quiet()
+    return {
+      exitCode: res.exitCode,
+      stdout: res.stdout.toString(),
+      stderr: res.stderr.toString(),
+    }
   }
 
   return {
@@ -669,6 +678,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
           `- Subagent sessions: file tools edit an isolated git-vwt workspace named opencode-<sessionID> (this session's workspace would be ${ws}).`,
           "- Subagents must never apply changes to the working directory.",
           "- To review/apply a subagent workspace from the primary, use vwt_patch/vwt_apply with that subagent sessionID (primary should call vwt_apply, not ask the user to run it).",
+          "- If vwt_apply reports conflicts, resolve conflict markers (<<<<<<< >>>>>>>) in the affected files.",
         ].join("\n"),
       )
     },
@@ -1203,8 +1213,20 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             },
           })
 
-          await vwtApply(ws, author, context.worktree)
-          return `applied workspace ${ws} to working directory\n`
+          const res = await vwtApply(ws, author, context.worktree)
+          if (res.exitCode === 0) {
+            return `applied workspace ${ws} to working directory\n`
+          }
+
+          // `git apply --3way` returns exit code 1 when it applies with conflicts.
+          const combined = `${res.stdout}\n${res.stderr}`
+          if (res.exitCode === 1 && combined.includes("with conflicts")) {
+            const out = combined.trim()
+            return `applied workspace ${ws} with conflicts\n${out ? out + "\n" : ""}Resolve conflict markers (<<<<<<< >>>>>>>) in the files above.\n`
+          }
+
+          const errText = (res.stderr || res.stdout).trim()
+          throw new Error(errText || `failed to apply workspace ${ws} (exit ${res.exitCode})`)
         },
       }),
     },

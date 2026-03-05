@@ -779,11 +779,87 @@ func cmdApply(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []
 	if strings.TrimSpace(diff) == "" {
 		return 0
 	}
-	if _, err := gr.RunGit(ctx, strings.NewReader(diff), "apply", "--whitespace=nowarn", "--recount"); err != nil {
+	// First, try a strict apply.
+	if _, err := gr.RunGit(ctx, strings.NewReader(diff), "apply", "--whitespace=nowarn", "--recount"); err == nil {
+		return 0
+	}
+
+	// If strict apply fails, fall back to a three-way apply that can write conflict markers.
+	//
+	// Note: `git apply --3way` requires affected files to exist in the index. To avoid touching the
+	// user's index, we use a temporary index file and stage the current working tree versions of
+	// changed paths into it.
+	paths, err := gitDiffNameOnly(ctx, gr, ws.Base, ws.Head)
+	if err != nil {
 		fmt.Fprintln(stdio.Err, err)
 		return 1
 	}
-	return 0
+
+	tmp, err := os.CreateTemp("", "git-vwt-index-")
+	if err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+	idxPath := tmp.Name()
+	_ = tmp.Close()
+	// git commands expect a valid index file. We remove the pre-created file and let git create it.
+	_ = os.Remove(idxPath)
+	defer func() { _ = os.Remove(idxPath) }()
+
+	idxRunner := gr.WithEnv(map[string]string{"GIT_INDEX_FILE": idxPath})
+	if _, err := idxRunner.RunGit(ctx, nil, "read-tree", "--empty"); err != nil {
+		fmt.Fprintln(stdio.Err, err)
+		return 1
+	}
+
+	for _, p := range paths {
+		if err := validateTreePath(p); err != nil {
+			fmt.Fprintln(stdio.Err, err)
+			return 1
+		}
+		if _, statErr := os.Stat(p); statErr != nil {
+			// Deleted paths won't exist in the working tree. Skip staging.
+			continue
+		}
+		if _, err := idxRunner.RunGit(ctx, nil, "add", "--", p); err != nil {
+			fmt.Fprintln(stdio.Err, err)
+			return 1
+		}
+	}
+
+	res3, err := idxRunner.RunGit(ctx, strings.NewReader(diff), "apply", "--3way", "--whitespace=nowarn", "--recount")
+	combined := res3.Stdout + res3.Stderr
+	// Exit code 1 with a conflict summary means the patch was applied with conflict markers.
+	if res3.ExitCode == 1 && strings.Contains(combined, "with conflicts") {
+		if strings.TrimSpace(res3.Stdout) != "" {
+			fmt.Fprint(stdio.Out, res3.Stdout)
+		}
+		if strings.TrimSpace(res3.Stderr) != "" {
+			fmt.Fprint(stdio.Err, res3.Stderr)
+		}
+		return 1
+	}
+	if err == nil {
+		return 0
+	}
+	fmt.Fprintln(stdio.Err, err)
+	return 1
+}
+
+func gitDiffNameOnly(ctx context.Context, gr gitx.Runner, base, head string) ([]string, error) {
+	res, err := gr.RunGit(ctx, nil, "diff", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv", base, head)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0)
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		p := strings.TrimSpace(line)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func cmdClose(ctx context.Context, gr gitx.Runner, wsName string, argv []string, stdio IO) int {
