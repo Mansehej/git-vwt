@@ -3,12 +3,11 @@
 [![CI](https://github.com/Mansehej/git-vwt/actions/workflows/ci.yml/badge.svg)](https://github.com/Mansehej/git-vwt/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
-`git-vwt` is a Git subcommand (`git vwt`) for agent-safe editing.
+Virtual workspaces for agent-safe editing.
 
-It stores workspace state as commits under
-`refs/vwt/workspaces/<name>`, so tools can read/write/search files without
-touching your working directory. You inspect the resulting diff, then apply it
-once with `git vwt apply`.
+`git-vwt` adds a `git vwt` subcommand that lets tools write changes into an isolated virtual workspace (stored as a commit under `refs/vwt/workspaces/<name>`) instead of touching your checked-out working directory. This gives you worktree-like isolation without the checkout/disk overhead and cleanup burden of spawning N worktrees. You inspect a unified diff, then apply it as normal unstaged changes when you're ready.
+
+This repo also ships an OpenCode plugin (`.opencode/plugins/vwt-mode.ts`) that routes subagent edits into per-session virtual workspaces, so you can parallelize agent work without creating Git worktrees.
 
 ```bash
 git vwt --ws demo open
@@ -19,23 +18,89 @@ git vwt --ws demo apply
 
 ## Table of contents
 
-- [Why use it](#why-use-it)
+- [Why](#why)
+- [OpenCode quickstart](#opencode-quickstart)
+- [Worktrees vs git-vwt](#worktrees-vs-git-vwt)
+- [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Installation](#installation)
-- [Quick start](#quick-start)
+- [CLI quick start](#cli-quick-start)
 - [Command reference](#command-reference)
 - [Workspace behavior](#workspace-behavior)
 - [Safety guarantees](#safety-guarantees)
+- [Benchmarks](#benchmarks)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Integrations and skills](#integrations-and-skills)
 
-## Why use it
+## Why
 
-- No per-agent worktrees to create or clean up.
-- Workspace operations are isolated from your working directory.
-- `git vwt patch` is deterministic (always `base..head`).
-- Works as a standard Git extension once `git-vwt` is on `PATH`.
+- Parallel agent work without worktree sprawl.
+- Keep your working directory clean until you choose to apply.
+- Deterministic patch (`base..head`) you can review.
+- Conflict-friendly apply: if parallel work overlaps, `apply` can fall back to conflict markers instead of dropping a patch.
+- Git-native: workspace state is just commits and refs.
+
+## OpenCode quickstart
+
+Build the workspace CLI:
+
+```bash
+go build -o git-vwt ./cmd/git-vwt
+```
+
+Run OpenCode with VWT mode enabled:
+
+```bash
+OPENCODE_VWT=1 opencode
+```
+
+Default behavior:
+
+- Primary session edits the working directory normally.
+- Subagent sessions write to isolated workspaces named `opencode-<sessionID>`.
+- The primary applies subagent results with `vwt_apply` (and resolves conflict markers if needed).
+
+Optional (advanced): isolate primary sessions too (useful when running many `opencode run` processes in parallel):
+
+```bash
+OPENCODE_VWT=1 OPENCODE_VWT_PRIMARY=1 opencode
+```
+
+See `docs/harnesses/opencode-vwt.md` for more details.
+
+## Worktrees vs git-vwt
+
+Use `git worktree` when:
+
+- You need a full on-disk checkout per worker (running tests/builds/servers concurrently).
+- You need to run tooling against each isolated change set before integration.
+- Your workflow depends on tools that mutate lots of files via `bash` (formatters, codegen) and must run against the modified tree.
+- You want separate branches/commit history per worker.
+
+Use `git vwt` when:
+
+- You want many lightweight isolated edit buffers with minimal disk overhead.
+- Your workers are primarily file read/write/search operations with a final merge/apply step.
+- You can defer running tooling until after you apply/integrate.
+- You want conflicts surfaced as markers in one checkout instead of juggling worktrees.
+
+## How it works
+
+- A workspace is a commit whose tree is the "workspace view".
+- The workspace base is the parent commit; the workspace head is the workspace commit.
+- `open/info/read/write/rm/mv/ls/search/patch` operate on the workspace tree and do not touch your checkout.
+- `patch` prints `git diff <base>..<head>`.
+- `apply` applies that diff to your checkout as unstaged changes:
+  - exit `0`: applied cleanly
+  - exit `1`: either (a) applied with conflicts (conflict markers written), or (b) failed; check the output
+
+Base selection (`open --base auto`):
+
+- Clean repo: base is `HEAD`.
+- Dirty repo (or no `HEAD`): base is a synthetic snapshot of the current working directory (includes untracked files, excludes ignored files).
+
+This means pre-existing dirty changes are treated as base context, not workspace edits.
 
 ## Requirements
 
@@ -44,7 +109,7 @@ git vwt --ws demo apply
 
 ## Installation
 
-### Option 1: Build from source (recommended)
+### Option 1: build from source (recommended)
 
 From the repository root:
 
@@ -59,7 +124,7 @@ Make sure `$HOME/.local/bin` is on your `PATH`, then verify:
 git vwt help
 ```
 
-### Option 2: Install with Go from a local clone
+### Option 2: install with Go from a local clone
 
 From the repository root:
 
@@ -67,10 +132,9 @@ From the repository root:
 go install ./cmd/git-vwt
 ```
 
-This installs `git-vwt` into your Go bin directory (`$GOBIN`, or
-`$(go env GOPATH)/bin` by default).
+This installs `git-vwt` into your Go bin directory (`$GOBIN`, or `$(go env GOPATH)/bin` by default).
 
-## Quick start
+## CLI quick start
 
 ```bash
 # 1) Open (or reuse) a workspace
@@ -121,18 +185,28 @@ git vwt --ws demo close
 - Missing workspaces are created automatically by commands that need one.
 - `open --base auto` chooses the base commit like this:
   - clean repo: base is `HEAD`
-  - dirty repo (or no `HEAD`): base is a synthetic snapshot of current working
-    directory state (includes untracked files, excludes ignored files)
-
-This means pre-existing dirty changes are treated as base context, not as
-workspace edits.
+  - dirty repo (or no `HEAD`): base is a synthetic snapshot of current working directory state (includes untracked files, excludes ignored files)
 
 ## Safety guarantees
 
 - `open/info/read/write/rm/mv/ls/search/patch` do not modify your working tree.
 - `apply` is the only command that updates your working directory.
 - `apply` leaves `HEAD` and index unchanged (changes are unstaged).
+- `apply` may write conflict markers and exit `1` when conflicts occur.
 - Unsafe paths are rejected (absolute paths, `..`, and `.git/**`).
+
+## Benchmarks
+
+Bench scripts live under `bench/`.
+
+- Single-session subagent benchmark: `python3 bench/webapp_bench.py`
+  - Measures serial vs subagents vs worktrees for a tiny static webapp scaffold.
+- Multi-process benchmark (recommended): `python3 bench/process_bench.py --components 8 --workers 8`
+  - Runs N parallel `opencode run` processes and compares:
+    - serial execution
+    - parallel work via `git worktree`
+    - parallel work via git-vwt workspaces (no worktrees)
+  - Also reports disk overhead (worktree checkout bytes vs `.git/objects` growth).
 
 ## Troubleshooting
 
@@ -153,22 +227,8 @@ go test ./...
 go build -o git-vwt ./cmd/git-vwt
 ```
 
-## Benchmarks
-
-Bench scripts live under `bench/`.
-
-- Single-session subagent benchmark: `python3 bench/webapp_bench.py`
-  - Measures serial vs subagents vs worktrees for a tiny static webapp scaffold.
-- Multi-process benchmark (recommended): `python3 bench/process_bench.py --components 8 --workers 8`
-  - Runs N parallel `opencode run` processes and compares:
-    - serial execution
-    - parallel work via `git worktree`
-    - parallel work via git-vwt workspaces (no worktrees)
-  - Also reports disk overhead (worktree checkout bytes vs `.git/objects` growth).
-
 ## Integrations and skills
 
 This repo includes cross-tool skill definitions under `skills/`.
 
-See `docs/INTEGRATIONS.md` for Claude Code, OpenCode, and Codex installation
-paths.
+See `docs/INTEGRATIONS.md` for Claude Code, OpenCode, and Codex installation paths.
