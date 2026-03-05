@@ -153,6 +153,19 @@ go test ./...
 go build -o git-vwt ./cmd/git-vwt
 ```
 
+## Benchmarks
+
+Bench scripts live under `bench/`.
+
+- Single-session subagent benchmark: `python3 bench/webapp_bench.py`
+  - Measures serial vs subagents vs worktrees for a tiny static webapp scaffold.
+- Multi-process benchmark (recommended): `python3 bench/process_bench.py --components 8 --workers 8`
+  - Runs N parallel `opencode run` processes and compares:
+    - serial execution
+    - parallel work via `git worktree`
+    - parallel work via git-vwt workspaces (no worktrees)
+  - Also reports disk overhead (worktree checkout bytes vs `.git/objects` growth).
+
 ## Integrations and skills
 
 This repo includes cross-tool skill definitions under `skills/`.
