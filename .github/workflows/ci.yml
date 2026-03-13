@@ -21,5 +21,16 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install OpenCode plugin deps
+        working-directory: .opencode
+        run: bun install --frozen-lockfile
+
       - name: Test
         run: go test ./...
+
+      - name: Test OpenCode plugin
+        working-directory: .opencode
+        run: bun test plugins/vwt-mode.test.ts

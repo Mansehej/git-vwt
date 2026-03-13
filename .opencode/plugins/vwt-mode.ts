@@ -138,6 +138,32 @@ type UpdateFileChunk = {
   is_end_of_file?: boolean
 }
 
+type TextWithEOF = {
+  lines: string[]
+  hasTrailingNewline: boolean
+}
+
+type NormalizedChunkLines = {
+  lines: string[]
+  explicitTrailingNewline: boolean
+}
+
+type ApplyStatus = "clean" | "conflicted" | "failed"
+
+type VwtApplyResult = {
+  status: ApplyStatus
+  paths: string[]
+  stdout: string
+  stderr: string
+}
+
+type PendingWorkItem = {
+  childSessionID: string
+  workspace: string
+  digest: string
+  queuedAt: number
+}
+
 function stripHeredoc(input: string): string {
   // Match heredoc patterns like: cat <<'EOF'\n...\nEOF or <<EOF\n...\nEOF
   const heredocMatch = input.match(/^(?:cat\s+)?<<['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/)
@@ -240,6 +266,49 @@ function parseAddFileContent(lines: string[], startIdx: number): { content: stri
 
   if (content.endsWith("\n")) content = content.slice(0, -1)
   return { content, nextIdx: i }
+}
+
+function splitLinesWithEOF(text: string): TextWithEOF {
+  if (text.length === 0) {
+    return { lines: [], hasTrailingNewline: false }
+  }
+
+  const hasTrailingNewline = text.endsWith("\n")
+  const lines = text.split("\n")
+  if (hasTrailingNewline) {
+    lines.pop()
+  }
+  return { lines, hasTrailingNewline }
+}
+
+function joinLinesWithEOF(lines: string[], hasTrailingNewline: boolean): string {
+  const joined = lines.join("\n")
+  return hasTrailingNewline ? `${joined}\n` : joined
+}
+
+function normalizeChunkLines(lines: string[]): NormalizedChunkLines {
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    return {
+      lines: lines.slice(0, -1),
+      explicitTrailingNewline: true,
+    }
+  }
+
+  return {
+    lines: [...lines],
+    explicitTrailingNewline: false,
+  }
+}
+
+function chunkTrailingNewlineOverride(chunk: UpdateFileChunk): boolean | null {
+  if (!chunk.is_end_of_file) return null
+
+  const oldChunk = normalizeChunkLines(chunk.old_lines)
+  const newChunk = normalizeChunkLines(chunk.new_lines)
+  if (oldChunk.explicitTrailingNewline === newChunk.explicitTrailingNewline) {
+    return null
+  }
+  return newChunk.explicitTrailingNewline
 }
 
 function parsePatch(patchText: string): { hunks: PatchHunk[] } {
@@ -359,6 +428,9 @@ function computeReplacements(
   let lineIndex = 0
 
   for (const chunk of chunks) {
+    const oldChunk = normalizeChunkLines(chunk.old_lines)
+    const newChunk = normalizeChunkLines(chunk.new_lines)
+
     if (chunk.change_context) {
       const contextIdx = seekSequence(originalLines, [chunk.change_context], lineIndex)
       if (contextIdx === -1) {
@@ -367,22 +439,16 @@ function computeReplacements(
       lineIndex = contextIdx + 1
     }
 
-    if (chunk.old_lines.length === 0) {
-      replacements.push([originalLines.length, 0, chunk.new_lines])
+    if (oldChunk.lines.length === 0) {
+      const insertAt = chunk.is_end_of_file ? originalLines.length : lineIndex
+      replacements.push([insertAt, 0, newChunk.lines])
+      lineIndex = insertAt
       continue
     }
 
-    let pattern = chunk.old_lines
-    let newSlice = chunk.new_lines
+    const pattern = oldChunk.lines
+    const newSlice = newChunk.lines
     let found = seekSequence(originalLines, pattern, lineIndex, chunk.is_end_of_file)
-
-    if (found === -1 && pattern.length > 0 && pattern[pattern.length - 1] === "") {
-      pattern = pattern.slice(0, -1)
-      if (newSlice.length > 0 && newSlice[newSlice.length - 1] === "") {
-        newSlice = newSlice.slice(0, -1)
-      }
-      found = seekSequence(originalLines, pattern, lineIndex, chunk.is_end_of_file)
-    }
 
     if (found === -1) {
       throw new Error(`Failed to find expected lines in ${filePathForErrors}:\n${chunk.old_lines.join("\n")}`)
@@ -413,19 +479,25 @@ function deriveNewContentsFromChunks(
   filePathForErrors: string,
   chunks: UpdateFileChunk[],
 ): string {
-  let originalLines = originalContent.split("\n")
-  if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
-    originalLines = originalLines.slice(0, -1)
-  }
+  const original = splitLinesWithEOF(originalContent)
+  const originalLines = original.lines
 
   const replacements = computeReplacements(originalLines, filePathForErrors, chunks)
   let newLines = applyReplacements(originalLines, replacements)
 
-  if (newLines.length === 0 || newLines[newLines.length - 1] !== "") {
-    newLines = [...newLines, ""]
+  let hasTrailingNewline = original.hasTrailingNewline
+  for (const chunk of chunks) {
+    const override = chunkTrailingNewlineOverride(chunk)
+    if (override != null) {
+      hasTrailingNewline = override
+    }
   }
 
-  return newLines.join("\n")
+  if (newLines.length === 0) {
+    hasTrailingNewline = false
+  }
+
+  return joinLinesWithEOF(newLines, hasTrailingNewline)
 }
 
 export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktree }) => {
@@ -446,13 +518,11 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     activeToastShown = true
     await client.tui
       .showToast({
-        body: {
-          title: "VWT mode active",
-          message:
-            "OPENCODE_VWT=1 is set. Subagents edit isolated git-vwt workspaces; the primary edits the working tree normally.",
-          variant: "info",
-          duration: 12000,
-        },
+        title: "VWT mode active",
+        message:
+          "OPENCODE_VWT=1 is set. Subagents edit isolated git-vwt workspaces; the primary edits the working tree normally.",
+        variant: "info",
+        duration: 12000,
       })
       .catch(() => {})
   }
@@ -463,15 +533,18 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     if (t.startsWith(VWT_TITLE_PREFIX)) return
     await client.session
       .update({
-        path: { id: sessionID },
-        body: { title: VWT_TITLE_PREFIX + t },
+        sessionID,
+        title: VWT_TITLE_PREFIX + t,
       })
       .catch(() => {})
   }
 
   const parentBySession = new Map<string, string | null>()
   const openedWorkspaces = new Set<string>()
-  const lastNotifiedPatchHashBySession = new Map<string, string>()
+  const statusBySession = new Map<string, "busy" | "idle" | "retry">()
+  const lastQueuedPatchHashBySession = new Map<string, string>()
+  const pendingByParent = new Map<string, Map<string, PendingWorkItem>>()
+  const inFlightByParent = new Map<string, PendingWorkItem>()
 
   let vwtPrefixCache: string[] | null = null
 
@@ -505,7 +578,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
   async function getParentID(sessionID: string): Promise<string | null> {
     if (parentBySession.has(sessionID)) return parentBySession.get(sessionID) ?? null
     try {
-      const res: any = await client.session.get({ path: { id: sessionID } })
+      const res: any = await client.session.get({ sessionID })
       const info = res?.data ?? res
       const parentID = info?.parentID ?? null
       parentBySession.set(sessionID, parentID)
@@ -590,18 +663,136 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     return await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} patch`.text()
   }
 
+  async function vwtClose(ws: string, agent: string, cwd: string): Promise<void> {
+    const prefix = await vwtPrefix(cwd)
+    await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} close`.quiet()
+    openedWorkspaces.delete(ws)
+  }
+
   async function vwtApply(
     ws: string,
     agent: string,
     cwd: string,
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  ): Promise<VwtApplyResult> {
     await ensureWsOpen(ws, agent, cwd)
     const prefix = await vwtPrefix(cwd)
-    const res = await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} apply`.nothrow().quiet()
-    return {
-      exitCode: res.exitCode,
-      stdout: res.stdout.toString(),
-      stderr: res.stderr.toString(),
+    const res = await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} apply --json`.nothrow().quiet()
+    const raw = res.stdout.toString().trim()
+    if (!raw) {
+      return {
+        status: res.exitCode === 0 ? "clean" : "failed",
+        paths: [],
+        stdout: res.stdout.toString(),
+        stderr: res.stderr.toString(),
+      }
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<VwtApplyResult>
+      return {
+        status: parsed.status === "conflicted" || parsed.status === "failed" ? parsed.status : "clean",
+        paths: Array.isArray(parsed.paths) ? parsed.paths.map((p) => String(p)) : [],
+        stdout: typeof parsed.stdout === "string" ? parsed.stdout : "",
+        stderr: typeof parsed.stderr === "string" ? parsed.stderr : "",
+      }
+    } catch (err) {
+      throw new Error(`failed to parse git-vwt apply output: ${String(err)}`)
+    }
+  }
+
+  function sessionStateType(status: unknown): "busy" | "idle" | "retry" | undefined {
+    if (!status || typeof status !== "object") return undefined
+    const value = (status as { type?: unknown }).type
+    if (value === "busy" || value === "idle" || value === "retry") return value
+    return undefined
+  }
+
+  function enqueuePendingWork(parentID: string, item: PendingWorkItem): void {
+    let queue = pendingByParent.get(parentID)
+    if (!queue) {
+      queue = new Map<string, PendingWorkItem>()
+      pendingByParent.set(parentID, queue)
+    }
+    queue.set(item.childSessionID, item)
+  }
+
+  function dropPendingWork(childSessionID: string): void {
+    for (const [parentID, queue] of pendingByParent.entries()) {
+      queue.delete(childSessionID)
+      if (queue.size === 0) pendingByParent.delete(parentID)
+    }
+  }
+
+  function clearTrackedWorkspace(sessionID: string): void {
+    lastQueuedPatchHashBySession.delete(sessionID)
+    dropPendingWork(sessionID)
+    const ws = wsForSession(sessionID)
+    openedWorkspaces.delete(ws)
+  }
+
+  function nextPendingWork(parentID: string): PendingWorkItem | null {
+    const queue = pendingByParent.get(parentID)
+    if (!queue || queue.size === 0) return null
+
+    let next: PendingWorkItem | null = null
+    for (const item of queue.values()) {
+      if (!next || item.queuedAt < next.queuedAt) {
+        next = item
+      }
+    }
+    if (!next) return null
+    queue.delete(next.childSessionID)
+    if (queue.size === 0) pendingByParent.delete(parentID)
+    return next
+  }
+
+  function buildOrchestrationPrompt(item: PendingWorkItem): string {
+    return [
+      "A child session is idle with a non-empty git-vwt workspace patch.",
+      "",
+      `Child session: ${item.childSessionID}`,
+      `Workspace: ${item.workspace}`,
+      `Patch digest: ${item.digest}`,
+      "",
+      "Handle this automatically:",
+      `1. Run vwt_apply for session ${item.childSessionID}.`,
+      "2. If apply reports conflicts, inspect the affected working-directory files and resolve them.",
+      `3. When the child workspace is fully integrated, run vwt_close for session ${item.childSessionID}.`,
+      "4. Continue only after the integration work is complete.",
+    ].join("\n")
+  }
+
+  async function flushParentQueue(parentID: string): Promise<void> {
+    if (inFlightByParent.has(parentID)) return
+    const state = statusBySession.get(parentID)
+    if (state === "busy" || state === "retry") return
+
+    const next = nextPendingWork(parentID)
+    if (!next) return
+
+    inFlightByParent.set(parentID, next)
+    try {
+      await client.session.promptAsync({
+        sessionID: parentID,
+        parts: [
+          {
+            type: "text",
+            text: buildOrchestrationPrompt(next),
+            synthetic: true,
+            metadata: {
+              vwt: {
+                kind: "child-idle",
+                childSessionID: next.childSessionID,
+                workspace: next.workspace,
+                digest: next.digest,
+              },
+            },
+          },
+        ],
+      })
+    } catch {
+      inFlightByParent.delete(parentID)
+      enqueuePendingWork(parentID, next)
     }
   }
 
@@ -627,6 +818,15 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
         return
       }
 
+      if (event.type === "session.status") {
+        const sessionID: string | undefined = (event as any).properties?.sessionID
+        const status = sessionStateType((event as any).properties?.status)
+        if (sessionID && status) {
+          statusBySession.set(sessionID, status)
+        }
+        return
+      }
+
       if (event.type === "session.updated") {
         const info: any = (event as any).properties?.info
         if (info?.id) {
@@ -634,18 +834,44 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
         }
         return
       }
+
       if (event.type === "session.deleted") {
         const info: any = (event as any).properties?.info
         if (info?.id) {
+          const deletedID = String(info.id)
+          const parentID = parentBySession.get(deletedID) ?? null
+          const inFlight = Array.from(inFlightByParent.values()).some((item) => item.childSessionID === deletedID)
+
+          if (!inFlight) {
+            await vwtClose(wsForSession(deletedID), "opencode", projectWorktree).catch(() => {})
+            clearTrackedWorkspace(deletedID)
+          } else {
+            dropPendingWork(deletedID)
+          }
+
+          pendingByParent.delete(deletedID)
+          inFlightByParent.delete(deletedID)
           parentBySession.delete(info.id)
-          lastNotifiedPatchHashBySession.delete(info.id)
+          statusBySession.delete(info.id)
+
+          if (parentID) {
+            await flushParentQueue(parentID)
+          }
         }
         return
       }
+
       if (event.type !== "session.idle") return
 
       const sessionID: string | undefined = (event as any).properties?.sessionID
       if (!sessionID) return
+
+      statusBySession.set(sessionID, "idle")
+      if (inFlightByParent.has(sessionID)) {
+        inFlightByParent.delete(sessionID)
+        await flushParentQueue(sessionID)
+      }
+
       if (!(await isChildSession(sessionID))) return
 
       const ws = wsForSession(sessionID)
@@ -657,24 +883,31 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       } catch {
         return
       }
-      if (!patch.trim()) return
+
+      if (!patch.trim()) {
+        lastQueuedPatchHashBySession.delete(sessionID)
+        await vwtClose(ws, "opencode", projectWorktree).catch(() => {})
+        return
+      }
 
       const digest = sha1(patch)
-      if (lastNotifiedPatchHashBySession.get(sessionID) === digest) return
-      lastNotifiedPatchHashBySession.set(sessionID, digest)
+      if (lastQueuedPatchHashBySession.get(sessionID) === digest) return
 
-      await client.tui.showToast({
-        body: {
-          title: "VWT patch ready",
-          message: `Subagent session ${sessionID} has workspace changes: ${ws}. Use: ./git-vwt --ws ${ws} patch (or git vwt --ws ${ws} patch if installed)`,
-          variant: "info",
-          duration: 8000,
-        },
+      const parentID = await getParentID(sessionID)
+      if (!parentID) return
+
+      lastQueuedPatchHashBySession.set(sessionID, digest)
+      enqueuePendingWork(parentID, {
+        childSessionID: sessionID,
+        workspace: ws,
+        digest,
+        queuedAt: Date.now(),
       })
+      await flushParentQueue(parentID)
     },
 
     async "experimental.chat.system.transform"(input, output) {
-      const ws = wsForSession(input.sessionID)
+      const ws = input.sessionID ? wsForSession(input.sessionID) : "opencode-<sessionID>"
       output.system.push(
         [
           "VWT mode is enabled (OPENCODE_VWT=1).",
@@ -683,8 +916,9 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             : "- Primary session: file tools edit the working directory (normal OpenCode behavior).",
           `- Subagent sessions: file tools edit an isolated git-vwt workspace named opencode-<sessionID> (this session's workspace would be ${ws}).`,
           "- Subagents must never apply changes to the working directory.",
-          "- To review/apply a workspace from the primary, use vwt_patch/vwt_apply with that sessionID (primary should call vwt_apply, not ask the user to run it).",
-          "- If vwt_apply reports conflicts, resolve conflict markers (<<<<<<< >>>>>>>) in the affected files.",
+          "- When a child session becomes idle with workspace changes, the plugin sends a synthetic orchestration message to the primary session.",
+          "- The primary session should use vwt_apply to integrate child workspaces and vwt_close after the workspace is fully integrated.",
+          "- If vwt_apply reports conflicts, the primary session should resolve them automatically before reporting back to the user.",
         ].join("\n"),
       )
     },
@@ -695,7 +929,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
         if (isGitVwtApply(command) && (await isChildSession(input.sessionID))) {
           const ws = wsForSession(input.sessionID)
           throw new Error(
-            `subagents can't apply. Ask the primary to run: ./git-vwt --ws ${ws} patch (or use vwt_patch/vwt_apply from the primary).`,
+            `subagents can't apply. The primary session must handle workspace ${ws} with vwt_patch/vwt_apply.`,
           )
         }
         return
@@ -917,13 +1151,11 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
           for (const hunk of hunks) {
             if (hunk.type === "add") {
               const { abs, rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
-              const newContent =
-                hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
               if (useVwt) {
-                await vwtWrite(ws, author, context.worktree, rel, newContent)
+                await vwtWrite(ws, author, context.worktree, rel, hunk.contents)
               } else {
                 await fs.mkdir(path.dirname(abs), { recursive: true })
-                await fs.writeFile(abs, newContent, "utf8")
+                await fs.writeFile(abs, hunk.contents, "utf8")
               }
               summaryLines.push(`A ${rel}`)
               continue
@@ -1195,6 +1427,8 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
           const patch = await vwtPatch(ws, author, context.worktree)
           if (!patch.trim()) {
+            await vwtClose(ws, author, context.worktree)
+            clearTrackedWorkspace(sid)
             return `workspace ${ws} patch is empty\n`
           }
 
@@ -1220,21 +1454,56 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
           })
 
           const res = await vwtApply(ws, author, context.worktree)
-          if (res.exitCode === 0) {
+          if (res.status === "clean") {
+            await vwtClose(ws, author, context.worktree)
+            clearTrackedWorkspace(sid)
             return `applied workspace ${ws} to working directory\n`
           }
 
-          // `git apply --3way` returns exit code 1 when it applies with conflicts.
-          const combined = `${res.stdout}\n${res.stderr}`
-          if (res.exitCode === 1 && combined.includes("with conflicts")) {
-            const out = combined.trim()
-            return `applied workspace ${ws} with conflicts\n${out ? out + "\n" : ""}Resolve conflict markers (<<<<<<< >>>>>>>) in the files above.\n`
+          if (res.status === "conflicted") {
+            const details = [res.stdout.trim(), res.stderr.trim()].filter(Boolean).join("\n")
+            const pathLine = res.paths.length ? `Conflicted paths: ${res.paths.join(", ")}\n` : ""
+            return `applied workspace ${ws} with conflicts\n${pathLine}${details ? details + "\n" : ""}`
           }
 
           const errText = (res.stderr || res.stdout).trim()
-          throw new Error(errText || `failed to apply workspace ${ws} (exit ${res.exitCode})`)
+          throw new Error(errText || `failed to apply workspace ${ws}`)
+        },
+      }),
+
+      vwt_close: tool({
+        description: "Close a git-vwt workspace for a session (primary-only).",
+        args: {
+          sessionID: tool.schema.string().optional().describe("Session ID whose workspace should be closed (defaults to current)") ,
+        },
+        async execute(args, context) {
+          if (await isChildSession(context.sessionID)) {
+            throw new Error("subagents can't close workspaces")
+          }
+
+          const sid = args.sessionID ?? context.sessionID
+          const ws = wsForSession(sid)
+
+          await context.ask({
+            permission: "edit",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: { workspace: ws },
+          })
+
+          await vwtClose(ws, vwtAuthor(context.agent), context.worktree)
+          clearTrackedWorkspace(sid)
+          return `closed workspace ${ws}\n`
         },
       }),
     },
   }
+}
+
+export const __test__ = {
+  chunkTrailingNewlineOverride,
+  deriveNewContentsFromChunks,
+  joinLinesWithEOF,
+  parsePatch,
+  splitLinesWithEOF,
 }

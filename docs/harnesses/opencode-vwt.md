@@ -8,7 +8,7 @@ This guide describes the OpenCode integration plan that:
 
 ## What this repo now ships
 
-- `opencode.json`: marks `vwt_apply` as primary-only
+- `opencode.json`: marks `vwt_apply` and `vwt_close` as primary-only
 - `.opencode/plugins/vwt-mode.ts`: VWT mode plugin (tool routing + safety; no-op unless `OPENCODE_VWT=1`)
 
 ## Quickstart
@@ -20,9 +20,8 @@ This guide describes the OpenCode integration plan that:
 - Primary session edits the working directory normally (no extra apply step).
 - Subagent sessions write to isolated workspaces:
   - `opencode-<sessionID>`
-- To review/apply a subagent workspace from the primary:
-  - tool: `vwt_patch` / `vwt_apply` (primary-only)
-  - or shell: `./git-vwt --ws opencode-<sessionID> patch|apply` (or `git vwt --ws ...` if installed)
+- When a child session becomes idle with a non-empty workspace patch, the plugin injects a synthetic orchestration message into the primary session.
+- The primary session integrates the child workspace with `vwt_apply`, resolves conflicts if needed, and finishes with `vwt_close`.
 
 ## Why OpenCode is a strong fit
 
@@ -51,8 +50,8 @@ When enabled, it:
 1. Routes file tools to `./git-vwt --ws opencode-<sessionID> ...` for **subagent (child) sessions**
 2. Redirects `apply_patch` in subagent sessions to edit the VWT workspace (not the working directory)
 3. Enforces safety:
-   - child sessions can never apply
-   - primary session can apply (optionally gated by approval)
+    - child sessions can never apply
+    - primary session can apply/close child workspaces
 
 When `OPENCODE_VWT` is not set, the plugin returns no hooks/tools and OpenCode behaves normally.
 
@@ -87,8 +86,8 @@ Note: OpenCode prefers `apply_patch` over `write`/`edit` for GPT-* models, so re
 
 Enforce mechanically, not via prompt text:
 
-- Provide a tool `vwt_apply` (or keep apply as `bash`), but make it primary-only.
-  - Preferred: `experimental.primary_tools: ["vwt_apply"]` in `opencode.json`
+- Provide tools `vwt_apply` and `vwt_close`, but make them primary-only.
+  - Preferred: `experimental.primary_tools: ["vwt_apply", "vwt_close"]` in `opencode.json`
 - In the plugin, block any attempt to apply from child sessions:
   - deny tool calls to `vwt_apply` for sessions with `parentID != null`
   - deny `bash` commands matching `git vwt apply*` for sessions with `parentID != null`
@@ -97,13 +96,12 @@ This works even if users have existing subagents with permissive `bash` permissi
 
 ## How the primary learns there is something to apply
 
-Remove the need for subagent prompt conventions:
+Remove the need for user-visible handoff:
 
 - On `session.idle` for a child session, the plugin runs:
   - `./git-vwt --ws opencode-<childSessionID> patch`
-- If non-empty, the plugin notifies the parent:
-  - simplest: `tui.toast.show` with the workspace ID
-  - nicer: inject a short message into the parent session (via the SDK) containing the patch and the apply command
+- If non-empty, the plugin queues the child workspace and sends a synthetic prompt to the parent session with `client.session.promptAsync(...)`.
+- The parent session then runs `vwt_apply`, resolves any conflicts in the working tree, and closes the child workspace with `vwt_close`.
 
 ## Approaches we considered (and why we ended up here)
 
@@ -120,5 +118,5 @@ Remove the need for subagent prompt conventions:
    - Cons: per-run toggle (not per session); still doesn't automatically inherit into arbitrary existing subagents unless everything is defined in that config dir
 
 4. Plugin-driven env toggle + tool overrides (chosen)
-   - Pros: explicit opt-in per run; works with existing subagents; can enforce "subagents can't apply"; can auto-notify the primary when patches exist
+   - Pros: explicit opt-in per run; works with existing subagents; can enforce "subagents can't apply"; can auto-orchestrate child-to-parent integration when patches exist
    - Cons: requires a plugin (some up-front complexity); toggle is per-run (restart to enable/disable); implementing full parity for every built-in tool is incremental

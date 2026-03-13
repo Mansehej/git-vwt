@@ -29,28 +29,28 @@ If the repo is dirty, `open` snapshots the current working directory and uses th
 Read a file from the workspace:
 
 ```bash
-git vwt read path/to/file.txt
+git vwt --ws default read path/to/file.txt
 ```
 
 Write a file to the workspace (content from stdin):
 
 ```bash
-git vwt write path/to/file.txt
+git vwt --ws default write path/to/file.txt
 ```
 
 Delete and rename:
 
 ```bash
-git vwt rm path/to/file.txt
-git vwt mv old.txt new.txt
+git vwt --ws default rm path/to/file.txt
+git vwt --ws default mv old.txt new.txt
 ```
 
 List and search:
 
 ```bash
-git vwt ls
-git vwt ls path/to/dir
-git vwt search "pattern" -- '*.go'
+git vwt --ws default ls
+git vwt --ws default ls path/to/dir
+git vwt --ws default search "pattern" -- '*.go'
 ```
 
 Get the resulting patch (derived artifact):

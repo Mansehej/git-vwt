@@ -59,7 +59,7 @@ Default behavior:
 
 - Primary session edits the working directory normally.
 - Subagent sessions write to isolated workspaces named `opencode-<sessionID>`.
-- The primary applies subagent results with `vwt_apply` (and resolves conflict markers if needed).
+- The plugin sends synthetic child-to-parent orchestration messages so the primary can apply and close subagent workspaces automatically.
 
 Optional (advanced): isolate primary sessions too (useful when running many `opencode run` processes in parallel):
 
@@ -94,6 +94,7 @@ Use `git vwt` when:
 - `apply` applies that diff to your checkout as unstaged changes:
   - exit `0`: applied cleanly
   - exit `1`: either (a) applied with conflicts (conflict markers written), or (b) failed; check the output
+  - `apply --json`: machine-readable status for automation (`clean`, `conflicted`, `failed`)
 
 Base selection (`open --base auto`):
 

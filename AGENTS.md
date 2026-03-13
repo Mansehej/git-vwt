@@ -27,22 +27,22 @@ git vwt --ws <name> open
 2. Read/write/search within the workspace:
 
 ```bash
-git vwt read <path>
-git vwt write <path>
-git vwt search <pattern> -- <pathspec>...
+git vwt --ws <name> read <path>
+git vwt --ws <name> write <path>
+git vwt --ws <name> search <pattern> -- <pathspec>...
 ```
 
 3. Inspect the derived patch:
 
 ```bash
-git vwt patch
+git vwt --ws <name> patch
 ```
 
 4. Apply and then close:
 
 ```bash
-git vwt apply
-git vwt close
+git vwt --ws <name> apply
+git vwt --ws <name> close
 ```
 
 ## Worktrees (When You Actually Need Them)

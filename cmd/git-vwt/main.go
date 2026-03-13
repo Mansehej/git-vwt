@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +23,13 @@ type IO struct {
 	In  io.Reader
 	Out io.Writer
 	Err io.Writer
+}
+
+type applyJSONResult struct {
+	Status string   `json:"status"`
+	Paths  []string `json:"paths,omitempty"`
+	Stdout string   `json:"stdout,omitempty"`
+	Stderr string   `json:"stderr,omitempty"`
 }
 
 func main() {
@@ -753,6 +762,7 @@ func cmdPatch(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []
 
 func cmdApply(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []string, stdio IO) int {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "emit machine-readable apply status")
 	fs.SetOutput(stdio.Err)
 	if err := fs.Parse(argv); err != nil {
 		return 2
@@ -777,10 +787,22 @@ func cmdApply(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []
 		return 1
 	}
 	if strings.TrimSpace(diff) == "" {
+		if *jsonOut {
+			if err := writeApplyJSON(stdio.Out, applyJSONResult{Status: "clean"}); err != nil {
+				fmt.Fprintln(stdio.Err, err)
+				return 1
+			}
+		}
 		return 0
 	}
 	// First, try a strict apply.
 	if _, err := gr.RunGit(ctx, strings.NewReader(diff), "apply", "--whitespace=nowarn", "--recount"); err == nil {
+		if *jsonOut {
+			if err := writeApplyJSON(stdio.Out, applyJSONResult{Status: "clean"}); err != nil {
+				fmt.Fprintln(stdio.Err, err)
+				return 1
+			}
+		}
 		return 0
 	}
 
@@ -828,9 +850,34 @@ func cmdApply(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []
 	}
 
 	res3, err := idxRunner.RunGit(ctx, strings.NewReader(diff), "apply", "--3way", "--whitespace=nowarn", "--recount")
-	combined := res3.Stdout + res3.Stderr
-	// Exit code 1 with a conflict summary means the patch was applied with conflict markers.
-	if res3.ExitCode == 1 && strings.Contains(combined, "with conflicts") {
+	if err == nil {
+		if *jsonOut {
+			if err := writeApplyJSON(stdio.Out, applyJSONResult{Status: "clean"}); err != nil {
+				fmt.Fprintln(stdio.Err, err)
+				return 1
+			}
+		}
+		return 0
+	}
+
+	conflictPaths, conflictErr := gitUnmergedPaths(ctx, idxRunner)
+	if conflictErr != nil {
+		fmt.Fprintln(stdio.Err, conflictErr)
+		return 1
+	}
+	if len(conflictPaths) > 0 {
+		if *jsonOut {
+			if err := writeApplyJSON(stdio.Out, applyJSONResult{
+				Status: "conflicted",
+				Paths:  conflictPaths,
+				Stdout: res3.Stdout,
+				Stderr: res3.Stderr,
+			}); err != nil {
+				fmt.Fprintln(stdio.Err, err)
+				return 1
+			}
+			return 1
+		}
 		if strings.TrimSpace(res3.Stdout) != "" {
 			fmt.Fprint(stdio.Out, res3.Stdout)
 		}
@@ -839,8 +886,21 @@ func cmdApply(ctx context.Context, gr gitx.Runner, wsName, agent string, argv []
 		}
 		return 1
 	}
-	if err == nil {
-		return 0
+
+	if *jsonOut {
+		stderrText := strings.TrimSpace(res3.Stderr)
+		if stderrText == "" {
+			stderrText = strings.TrimSpace(err.Error())
+		}
+		if err := writeApplyJSON(stdio.Out, applyJSONResult{
+			Status: "failed",
+			Stdout: res3.Stdout,
+			Stderr: stderrText,
+		}); err != nil {
+			fmt.Fprintln(stdio.Err, err)
+			return 1
+		}
+		return 1
 	}
 	fmt.Fprintln(stdio.Err, err)
 	return 1
@@ -860,6 +920,42 @@ func gitDiffNameOnly(ctx context.Context, gr gitx.Runner, base, head string) ([]
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+func gitUnmergedPaths(ctx context.Context, gr gitx.Runner) ([]string, error) {
+	res, err := gr.RunGit(ctx, nil, "ls-files", "-u", "--")
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	paths := make([]string, 0)
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		p := strings.TrimSpace(parts[1])
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func writeApplyJSON(w io.Writer, result applyJSONResult) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(result)
 }
 
 func cmdClose(ctx context.Context, gr gitx.Runner, wsName string, argv []string, stdio IO) int {

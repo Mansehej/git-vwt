@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "experimental": {
-    "primary_tools": ["vwt_apply"]
+    "primary_tools": ["vwt_apply", "vwt_close"]
   }
 }
