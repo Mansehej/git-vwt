@@ -60,6 +60,7 @@ Default behavior:
 - Primary session edits the working directory normally.
 - Subagent sessions write to isolated workspaces named `opencode-<sessionID>`.
 - The plugin sends synthetic child-to-parent orchestration messages so the primary can apply and close subagent workspaces automatically.
+- On startup, the plugin also sweeps orphaned `opencode-*` workspace refs whose sessions no longer exist.
 
 Optional (advanced): isolate primary sessions too (useful when running many `opencode run` processes in parallel):
 

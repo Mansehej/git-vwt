@@ -74,3 +74,14 @@ describe("apply_patch semantics", () => {
     expect(withNewline.hunks[0]).toEqual({ type: "add", path: "demo.txt", contents: "hello\n" })
   })
 })
+
+describe("orphan workspace sweep", () => {
+  test("keeps live session workspaces and closes orphaned opencode refs", () => {
+    const result = __test__.orphanedOpenCodeWorkspaces(
+      ["opencode-live", "opencode-orphan", "other-workspace"],
+      [{ id: "live" }, { id: "child/2" }],
+    )
+
+    expect(result).toEqual(["opencode-orphan"])
+  })
+})

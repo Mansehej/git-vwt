@@ -26,6 +26,14 @@ function wsForSession(sessionID: string): string {
   return `opencode-${sanitizeWorkspaceComponent(sessionID)}`
 }
 
+function orphanedOpenCodeWorkspaces(workspaces: string[], sessions: Array<{ id: string }>): string[] {
+  const live = new Set(sessions.map((session) => wsForSession(session.id)))
+  return workspaces
+    .filter((workspace) => workspace.startsWith("opencode-"))
+    .filter((workspace) => !live.has(workspace))
+    .sort((a, b) => a.localeCompare(b))
+}
+
 function stripLeadingDotSlash(p: string): string {
   let out = p
   while (out.startsWith("./")) out = out.slice(2)
@@ -547,6 +555,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
   const inFlightByParent = new Map<string, PendingWorkItem>()
 
   let vwtPrefixCache: string[] | null = null
+  let orphanSweepPromise: Promise<void> | null = null
 
   async function vwtPrefix(cwd: string): Promise<string[]> {
     if (vwtPrefixCache) return vwtPrefixCache
@@ -667,6 +676,53 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     const prefix = await vwtPrefix(cwd)
     await $.cwd(cwd)`${prefix} --ws ${ws} --agent ${agent} close`.quiet()
     openedWorkspaces.delete(ws)
+  }
+
+  async function listWorkspaceRefs(cwd: string): Promise<string[]> {
+    const out = await $.cwd(cwd)`git for-each-ref --format=%(refname:strip=3) refs/vwt/workspaces`.text()
+    return out
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+  }
+
+  async function listKnownSessions(): Promise<Array<{ id: string }>> {
+    const experimental = (client as any).experimental
+    if (experimental?.session?.list) {
+      const res: any = await experimental.session.list({ archived: true, limit: 1000 })
+      const sessions = res?.data ?? res
+      if (Array.isArray(sessions)) {
+        return sessions.map((session) => ({ id: String(session.id) }))
+      }
+    }
+
+    const res: any = await client.session.list({ limit: 1000 })
+    const sessions = res?.data ?? res
+    if (!Array.isArray(sessions)) return []
+    return sessions.map((session) => ({ id: String(session.id) }))
+  }
+
+  async function sweepOrphanedWorkspaces(): Promise<void> {
+    const workspaces = await listWorkspaceRefs(projectWorktree)
+    if (workspaces.length === 0) return
+
+    const sessions = await listKnownSessions()
+    const orphans = orphanedOpenCodeWorkspaces(workspaces, sessions)
+    if (orphans.length === 0) return
+
+    await Promise.all(
+      orphans.map(async (ws) => {
+        await vwtClose(ws, "opencode", projectWorktree).catch(() => {})
+      }),
+    )
+  }
+
+  async function ensureOrphanSweep(): Promise<void> {
+    if (!orphanSweepPromise) {
+      orphanSweepPromise = sweepOrphanedWorkspaces().catch(() => {})
+    }
+    await orphanSweepPromise
   }
 
   async function vwtApply(
@@ -801,12 +857,14 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       // Fallback: if we're continuing an existing session (no session.created event),
       // show the indicator toast on the first message.
       if (input.sessionID) {
+        await ensureOrphanSweep()
         await showVwtActiveToast()
       }
     },
 
     async event({ event }) {
       if (event.type === "session.created") {
+        await ensureOrphanSweep()
         const info: any = (event as any).properties?.info
         if (info?.id) parentBySession.set(info.id, info.parentID ?? null)
         if (info?.id && !info?.parentID) {
@@ -1504,6 +1562,7 @@ export const __test__ = {
   chunkTrailingNewlineOverride,
   deriveNewContentsFromChunks,
   joinLinesWithEOF,
+  orphanedOpenCodeWorkspaces,
   parsePatch,
   splitLinesWithEOF,
 }

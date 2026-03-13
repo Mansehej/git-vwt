@@ -22,6 +22,7 @@ This guide describes the OpenCode integration plan that:
   - `opencode-<sessionID>`
 - When a child session becomes idle with a non-empty workspace patch, the plugin injects a synthetic orchestration message into the primary session.
 - The primary session integrates the child workspace with `vwt_apply`, resolves conflicts if needed, and finishes with `vwt_close`.
+- On startup, the plugin sweeps stale `opencode-*` workspace refs for sessions that no longer exist.
 
 ## Why OpenCode is a strong fit
 
