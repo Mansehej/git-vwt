@@ -25,6 +25,8 @@
    git push origin v0.1.0
    ```
 
+6. After the GitHub release finishes, update `Formula/git-vwt.rb` to point at the new release assets and checksums, then push that formula change to `main`.
+
 ## What the tag does
 
 - Pushing a `v*` tag triggers `.github/workflows/release.yml`.
@@ -32,6 +34,7 @@
 - Each binary is stamped with the tag via `-X main.version=<tag>`.
 - GitHub release notes are generated automatically and categorized using `.github/release.yml`.
 - The workflow uploads `.tar.gz` and `.zip` archives plus `checksums.txt` to the GitHub release.
+- Homebrew installs those release archives through `Formula/git-vwt.rb`.
 
 ## Verification
 
@@ -40,3 +43,4 @@ After the release workflow finishes, verify:
 - the GitHub release exists for the tag
 - each archive downloads and extracts cleanly
 - `git vwt version` prints the tag value from the released binary
+- `brew install Mansehej/git-vwt/git-vwt` installs the expected release on macOS and Linux

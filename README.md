@@ -115,7 +115,26 @@ This means pre-existing dirty changes are treated as base context, not workspace
 
 ## Installation
 
-### Option 1: build from source (recommended)
+### Option 1: install from GitHub Releases
+
+Download the archive for your platform from GitHub Releases, extract it, and install the `git-vwt` binary somewhere on your `PATH`.
+
+- Release page: `https://github.com/Mansehej/git-vwt/releases`
+- Verify downloads with `checksums.txt`
+
+### Option 2: install with Homebrew
+
+```bash
+brew install Mansehej/git-vwt/git-vwt
+```
+
+Then verify:
+
+```bash
+git vwt version
+```
+
+### Option 3: build from source
 
 From the repository root:
 
@@ -130,7 +149,7 @@ Make sure `$HOME/.local/bin` is on your `PATH`, then verify:
 git vwt version
 ```
 
-### Option 2: install with Go from a local clone
+### Option 4: install with Go from a local clone
 
 From the repository root:
 
@@ -239,6 +258,7 @@ go build -o git-vwt ./cmd/git-vwt
 
 - Release metadata lives in `CHANGELOG.md`.
 - Tagging a `v*` release triggers `.github/workflows/release.yml` to build GitHub release archives for Linux, macOS, and Windows, plus a `checksums.txt` manifest.
+- Homebrew distribution is shipped from `Formula/git-vwt.rb` and installs the GitHub Release binaries via `brew install Mansehej/git-vwt/git-vwt`.
 - The release checklist is documented in `docs/RELEASING.md`.
 
 ## Changelog
