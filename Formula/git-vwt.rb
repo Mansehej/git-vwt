@@ -2,25 +2,25 @@ class GitVwt < Formula
   desc "Virtual workspaces for agent-safe editing"
   homepage "https://github.com/Mansehej/git-vwt"
   license "MIT"
-  version "0.1.2"
+  version "0.1.3"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.2/git-vwt_v0.1.2_darwin_arm64.tar.gz"
-      sha256 "5542f573ec7cbc02e521384513d0d00b196dd2e7a231a8d8e76bdd795d31f9d4"
+      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.3/git-vwt_v0.1.3_darwin_arm64.tar.gz"
+      sha256 "6b4698198cac683689880dcc1051fc157224c9922d53372929c38e42ebe9a80a"
     else
-      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.2/git-vwt_v0.1.2_darwin_amd64.tar.gz"
-      sha256 "e8502e5d9218b7c9527cf715202ec91f688e970708c93f01d779bb31592e5f91"
+      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.3/git-vwt_v0.1.3_darwin_amd64.tar.gz"
+      sha256 "3132ce851b4bdaaa6030f4689c38c6b7b418662b181a5ed8501e15c57edd30ec"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.2/git-vwt_v0.1.2_linux_arm64.tar.gz"
-      sha256 "0ea61a4491d104e21be52237eb402a3e824bb40dbc5e92f602e48cf34693791a"
+      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.3/git-vwt_v0.1.3_linux_arm64.tar.gz"
+      sha256 "e13dbc3a84bb64d3120bbadc0add92a6a167e73f9e0d269d16f41580a4543bf6"
     else
-      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.2/git-vwt_v0.1.2_linux_amd64.tar.gz"
-      sha256 "aa4244cf5ac2017c3e6700c622b0d9904adf912ede3598c81092b4a3afdb039b"
+      url "https://github.com/Mansehej/git-vwt/releases/download/v0.1.3/git-vwt_v0.1.3_linux_amd64.tar.gz"
+      sha256 "054e95daf1b5113170ce69bf43e235876c81fde5c721b11653dad8c92081283b"
     end
   end
 
