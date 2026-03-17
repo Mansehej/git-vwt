@@ -43,4 +43,4 @@ After the release workflow finishes, verify:
 - the GitHub release exists for the tag
 - each archive downloads and extracts cleanly
 - `git vwt version` prints the tag value from the released binary
-- `brew install Mansehej/git-vwt/git-vwt` installs the expected release on macOS and Linux
+- `brew tap Mansehej/git-vwt && brew install git-vwt` installs the expected release on macOS and Linux

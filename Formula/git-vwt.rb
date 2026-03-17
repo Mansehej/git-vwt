@@ -1,6 +1,7 @@
 class GitVwt < Formula
   desc "Virtual workspaces for agent-safe editing"
   homepage "https://github.com/Mansehej/git-vwt"
+  license "MIT"
   version "0.1.0"
 
   on_macos do

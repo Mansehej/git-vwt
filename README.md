@@ -125,7 +125,8 @@ Download the archive for your platform from GitHub Releases, extract it, and ins
 ### Option 2: install with Homebrew
 
 ```bash
-brew install Mansehej/git-vwt/git-vwt
+brew tap Mansehej/git-vwt
+brew install git-vwt
 ```
 
 Then verify:
@@ -258,7 +259,7 @@ go build -o git-vwt ./cmd/git-vwt
 
 - Release metadata lives in `CHANGELOG.md`.
 - Tagging a `v*` release triggers `.github/workflows/release.yml` to build GitHub release archives for Linux, macOS, and Windows, plus a `checksums.txt` manifest.
-- Homebrew distribution is shipped from `Formula/git-vwt.rb` and installs the GitHub Release binaries via `brew install Mansehej/git-vwt/git-vwt`.
+- Homebrew distribution is shipped from `Formula/git-vwt.rb` and installs the GitHub Release binaries via `brew tap Mansehej/git-vwt && brew install git-vwt`.
 - The release checklist is documented in `docs/RELEASING.md`.
 
 ## Changelog
