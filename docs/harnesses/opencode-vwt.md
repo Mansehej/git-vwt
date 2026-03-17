@@ -13,6 +13,8 @@ This guide describes the OpenCode integration plan that:
 
 ## Quickstart
 
+- Install the bundled OpenCode plugin into the current project:
+  - `git vwt opencode install`
 - If `git vwt` on your PATH is a different tool, build this repo's binary and use `./git-vwt ...`:
   - `go build -o git-vwt ./cmd/git-vwt`
 - Start OpenCode with VWT mode enabled:

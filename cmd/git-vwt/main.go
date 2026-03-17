@@ -94,6 +94,8 @@ doneGlobals:
 	args := argv[1:]
 
 	switch cmd {
+	case "opencode":
+		return cmdOpenCode(ctx, args, stdio)
 	case "version":
 		return cmdVersion(ctx, args, stdio)
 	case "open":
@@ -137,6 +139,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  --debug         Print git commands to stderr")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  git vwt opencode install [flags]   Install OpenCode plugin files")
 	fmt.Fprintln(w, "  git vwt version [--check] [--json]  Print version")
 	fmt.Fprintln(w, "  git vwt open [--base <rev>|auto]   Create workspace if missing")
 	fmt.Fprintln(w, "  git vwt info                      Print workspace base/head")

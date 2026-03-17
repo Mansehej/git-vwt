@@ -8,6 +8,17 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 - No unreleased changes yet.
 
+## [0.1.2] - 2026-03-17
+
+### Added
+
+- Added `git vwt opencode install` to install the bundled OpenCode integration into an existing project without cloning this repository.
+
+### Changed
+
+- Bundled the OpenCode plugin assets directly into the CLI so Homebrew and GitHub Release installs can set up the plugin in place.
+- Updated the OpenCode quickstart docs to use the new installer command.
+
 ## [0.1.1] - 2026-03-17
 
 ### Added

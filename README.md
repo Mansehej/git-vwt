@@ -47,7 +47,15 @@ git vwt --ws demo apply
 
 The bundled OpenCode plugin is still experimental. The core `git vwt` CLI is the stable surface; the OpenCode integration is shipped for early adopters and may continue to evolve as OpenCode's plugin APIs change.
 
-Build the workspace CLI:
+Install the OpenCode files into your current project:
+
+```bash
+git vwt opencode install
+```
+
+That writes `opencode.json`, `.opencode/plugins/vwt-mode.ts`, and the bundled Bun metadata, then runs `bun install --frozen-lockfile` automatically when Bun is available.
+
+If `git vwt` on your PATH is some other tool, build this repo's binary first:
 
 ```bash
 go build -o git-vwt ./cmd/git-vwt
@@ -190,6 +198,7 @@ git vwt --ws demo close
 
 | Command | What it does |
 | --- | --- |
+| `git vwt opencode install` | Install the bundled OpenCode plugin into the current project. |
 | `git vwt version` | Print the CLI version. |
 | `git vwt version --check` | Print the CLI version and check for a newer release. |
 | `git vwt version --check --json` | Print machine-readable version/update status for agent integrations. |
