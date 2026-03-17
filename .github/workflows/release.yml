@@ -65,6 +65,12 @@ jobs:
 
           sha256sum dist/*.tar.gz dist/*.zip > dist/checksums.txt
 
+      - name: Upload release metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: dist/checksums.txt
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -73,3 +79,41 @@ jobs:
             dist/*.zip
             dist/checksums.txt
           generate_release_notes: true
+
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download release metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: dist
+
+      - name: Update Homebrew formula
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/update_homebrew_formula.py --version "${VERSION}" --checksums dist/checksums.txt --formula Formula/git-vwt.rb
+
+      - name: Commit formula bump
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Formula/git-vwt.rb; then
+            exit 0
+          fi
+          git add Formula/git-vwt.rb
+          GIT_AUTHOR_NAME="github-actions[bot]" \
+          GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+          GIT_COMMITTER_NAME="github-actions[bot]" \
+          GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+            git commit -m "chore(dist): update Homebrew formula for ${GITHUB_REF_NAME}"
+          git push origin HEAD:main

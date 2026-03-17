@@ -25,7 +25,9 @@
    git push origin v0.1.0
    ```
 
-6. After the GitHub release finishes, update `Formula/git-vwt.rb` to point at the new release assets and checksums, then push that formula change to `main`.
+6. Monitor the release workflow until the follow-up Homebrew formula commit lands on `main`.
+
+If `main` is branch-protected, allow GitHub Actions to push the automated formula commit or adjust the workflow to use a bot token that can satisfy your protection rules.
 
 ## What the tag does
 
@@ -34,7 +36,7 @@
 - Each binary is stamped with the tag via `-X main.version=<tag>`.
 - GitHub release notes are generated automatically and categorized using `.github/release.yml`.
 - The workflow uploads `.tar.gz` and `.zip` archives plus `checksums.txt` to the GitHub release.
-- Homebrew installs those release archives through `Formula/git-vwt.rb`.
+- The same workflow then rewrites `Formula/git-vwt.rb` from `checksums.txt` and pushes the formula bump back to `main`.
 
 ## Verification
 
@@ -44,3 +46,4 @@ After the release workflow finishes, verify:
 - each archive downloads and extracts cleanly
 - `git vwt version` prints the tag value from the released binary
 - `brew tap Mansehej/git-vwt && brew install git-vwt` installs the expected release on macOS and Linux
+- `Formula/git-vwt.rb` on `main` references the new tag and matching checksums

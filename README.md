@@ -276,7 +276,7 @@ go build -o git-vwt ./cmd/git-vwt
 
 - Release metadata lives in `CHANGELOG.md`.
 - Tagging a `v*` release triggers `.github/workflows/release.yml` to build GitHub release archives for Linux, macOS, and Windows, plus a `checksums.txt` manifest.
-- Homebrew distribution is shipped from `Formula/git-vwt.rb` and installs the GitHub Release binaries via `brew tap Mansehej/git-vwt && brew install git-vwt`.
+- The release workflow automatically updates `Formula/git-vwt.rb` on `main` so Homebrew stays aligned with the latest tagged release.
 - The release checklist is documented in `docs/RELEASING.md`.
 
 ## Changelog
