@@ -14,10 +14,7 @@ func TestWorkspaceOpenWriteReadPatchApplyClose(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	git(t, dir, "init")
-	git(t, dir, "config", "user.name", "test")
-	git(t, dir, "config", "user.email", "test@example.com")
-	git(t, dir, "config", "commit.gpgsign", "false")
+	initTestRepo(t, dir)
 
 	mustWrite(t, filepath.Join(dir, "hello.txt"), "hello\n")
 	git(t, dir, "add", "hello.txt")
@@ -138,10 +135,7 @@ func TestWorkspaceBaseIsDirtyWorkingDirectorySnapshot(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	git(t, dir, "init")
-	git(t, dir, "config", "user.name", "test")
-	git(t, dir, "config", "user.email", "test@example.com")
-	git(t, dir, "config", "commit.gpgsign", "false")
+	initTestRepo(t, dir)
 
 	mustWrite(t, filepath.Join(dir, "hello.txt"), "clean\n")
 	git(t, dir, "add", "hello.txt")
@@ -236,10 +230,7 @@ func TestApplyFallsBackToThreeWayAndWritesConflictMarkers(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	git(t, dir, "init")
-	git(t, dir, "config", "user.name", "test")
-	git(t, dir, "config", "user.email", "test@example.com")
-	git(t, dir, "config", "commit.gpgsign", "false")
+	initTestRepo(t, dir)
 
 	mustWrite(t, filepath.Join(dir, "shared.txt"), "HEADER\nLINE=BASE\nFOOTER\n")
 	git(t, dir, "add", "shared.txt")
@@ -294,10 +285,7 @@ func TestApplyJSONReportsConflictStatusAndPaths(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	git(t, dir, "init")
-	git(t, dir, "config", "user.name", "test")
-	git(t, dir, "config", "user.email", "test@example.com")
-	git(t, dir, "config", "commit.gpgsign", "false")
+	initTestRepo(t, dir)
 
 	mustWrite(t, filepath.Join(dir, "shared.txt"), "HEADER\nLINE=BASE\nFOOTER\n")
 	git(t, dir, "add", "shared.txt")
@@ -345,10 +333,7 @@ func TestWorkspaceInfoMoveRemoveListAndSearch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	git(t, dir, "init")
-	git(t, dir, "config", "user.name", "test")
-	git(t, dir, "config", "user.email", "test@example.com")
-	git(t, dir, "config", "commit.gpgsign", "false")
+	initTestRepo(t, dir)
 
 	mustWrite(t, filepath.Join(dir, "docs", "guide.txt"), "alpha\nbeta\n")
 	mustWrite(t, filepath.Join(dir, "notes", "todo.txt"), "alpha task\n")

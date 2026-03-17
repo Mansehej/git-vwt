@@ -12,10 +12,7 @@ func TestDebugFlagEnablesGitCommandLogging(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	git(t, dir, "init")
-	git(t, dir, "config", "user.name", "test")
-	git(t, dir, "config", "user.email", "test@example.com")
-	git(t, dir, "config", "commit.gpgsign", "false")
+	initTestRepo(t, dir)
 
 	mustWrite(t, filepath.Join(dir, "a.txt"), "a\n")
 	git(t, dir, "add", "a.txt")
