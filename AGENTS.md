@@ -68,6 +68,36 @@ go build -o git-vwt ./cmd/git-vwt
 
 Put `git-vwt` on your `PATH` to use it as `git vwt ...`.
 
+## Release Process
+
+For a tagged release:
+
+1. Update `CHANGELOG.md` and land any release-prep changes on `main`.
+2. Run the repo checks:
+
+```bash
+go test ./...
+go build -o git-vwt ./cmd/git-vwt
+bun test plugins/vwt-mode.test.ts --cwd .opencode
+```
+
+3. Create and push an annotated tag:
+
+```bash
+git tag -a v0.x.y -m "v0.x.y"
+git push origin main
+git push origin v0.x.y
+```
+
+4. `.github/workflows/release.yml` publishes the GitHub Release artifacts and checksums, then regenerates `Formula/git-vwt.rb` from the published `checksums.txt` and pushes the Homebrew formula bump back to `main`.
+5. Verify the release page, the uploaded archives, and that `brew tap Mansehej/git-vwt && brew install git-vwt` resolves to the new version.
+
+Notes:
+
+- GitHub Releases are the source of truth for distributed binaries.
+- Homebrew installs from `Formula/git-vwt.rb`, which is kept in sync automatically by the release workflow.
+- If `main` is branch-protected, GitHub Actions needs permission to push the automated Homebrew formula commit.
+
 ## Skills Distribution
 
 This repo ships skill definitions under `skills/`.
