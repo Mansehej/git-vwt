@@ -30,6 +30,7 @@
 - Pushing a `v*` tag triggers `.github/workflows/release.yml`.
 - The workflow cross-compiles `git-vwt` for Linux, macOS, and Windows.
 - Each binary is stamped with the tag via `-X main.version=<tag>`.
+- GitHub release notes are generated automatically and categorized using `.github/release.yml`.
 - The workflow uploads `.tar.gz` and `.zip` archives plus `checksums.txt` to the GitHub release.
 
 ## Verification

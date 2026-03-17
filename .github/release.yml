@@ -1,0 +1,24 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Core CLI
+      labels:
+        - cli
+        - core
+    - title: Integrations
+      labels:
+        - opencode
+        - integrations
+    - title: Documentation
+      labels:
+        - docs
+    - title: Testing and Release Engineering
+      labels:
+        - test
+        - release
+        - ci
+    - title: Other Changes
+      labels:
+        - '*'
