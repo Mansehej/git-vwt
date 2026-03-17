@@ -91,6 +91,11 @@ jobs:
         with:
           ref: main
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
       - name: Download release metadata
         uses: actions/download-artifact@v4
         with:
@@ -102,7 +107,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          python3 scripts/update_homebrew_formula.py --version "${VERSION}" --checksums dist/checksums.txt --formula Formula/git-vwt.rb
+          go run ./scripts/update_homebrew_formula.go --version "${VERSION}" --checksums dist/checksums.txt --formula Formula/git-vwt.rb
 
       - name: Commit formula bump
         run: |
