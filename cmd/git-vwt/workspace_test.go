@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -337,5 +338,164 @@ func TestApplyJSONReportsConflictStatusAndPaths(t *testing.T) {
 	content := mustRead(t, filepath.Join(dir, "shared.txt"))
 	if !strings.Contains(content, "<<<<<<< ours") || !strings.Contains(content, ">>>>>>> theirs") {
 		t.Fatalf("expected conflict markers, got: %q", content)
+	}
+}
+
+func TestWorkspaceInfoMoveRemoveListAndSearch(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	git(t, dir, "init")
+	git(t, dir, "config", "user.name", "test")
+	git(t, dir, "config", "user.email", "test@example.com")
+	git(t, dir, "config", "commit.gpgsign", "false")
+
+	mustWrite(t, filepath.Join(dir, "docs", "guide.txt"), "alpha\nbeta\n")
+	mustWrite(t, filepath.Join(dir, "notes", "todo.txt"), "alpha task\n")
+	mustWrite(t, filepath.Join(dir, "top.txt"), "root\n")
+	git(t, dir, "add", "docs/guide.txt", "notes/todo.txt", "top.txt")
+	git(t, dir, "commit", "-m", "base")
+
+	ws := "wsops"
+
+	var openOut bytes.Buffer
+	withChdir(t, dir, func() {
+		code := run(ctx, []string{"--ws", ws, "open"}, IO{In: strings.NewReader(""), Out: &openOut, Err: &bytes.Buffer{}})
+		if code != 0 {
+			t.Fatalf("open exit=%d", code)
+		}
+	})
+	openFields := strings.Split(strings.TrimSpace(openOut.String()), "\t")
+	if len(openFields) != 3 {
+		t.Fatalf("unexpected open output: %q", openOut.String())
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "info"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("info exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if got := strings.TrimSpace(out.String()); got != strings.TrimSpace(openOut.String()) {
+			t.Fatalf("info mismatch: got=%q want=%q", got, strings.TrimSpace(openOut.String()))
+		}
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "ls"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("ls exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if got := out.String(); got != "docs\nnotes\ntop.txt\n" {
+			t.Fatalf("unexpected ls output: %q", got)
+		}
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "ls", "docs"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("ls docs exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if got := out.String(); got != "guide.txt\n" {
+			t.Fatalf("unexpected docs ls output: %q", got)
+		}
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "search", "alpha", "--", "docs/*.txt"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("search exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		got := out.String()
+		if !strings.Contains(got, openFields[1]+":docs/guide.txt:1:alpha") {
+			t.Fatalf("search missing docs match: %q", got)
+		}
+		if strings.Contains(got, "notes/todo.txt") {
+			t.Fatalf("search ignored pathspec: %q", got)
+		}
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "mv", "docs/guide.txt", "docs/moved.txt"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("mv exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "rm", "top.txt"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("rm exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "ls", "docs"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("ls docs after mv exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		if got := out.String(); got != "moved.txt\n" {
+			t.Fatalf("unexpected docs ls after mv: %q", got)
+		}
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "patch"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("patch exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+		got := out.String()
+		if !strings.Contains(got, "diff --git a/docs/guide.txt b/docs/guide.txt") {
+			t.Fatalf("patch missing moved source delete: %q", got)
+		}
+		if !strings.Contains(got, "diff --git a/docs/moved.txt b/docs/moved.txt") {
+			t.Fatalf("patch missing moved destination add: %q", got)
+		}
+		if !strings.Contains(got, "diff --git a/top.txt b/top.txt") {
+			t.Fatalf("patch missing top.txt delete: %q", got)
+		}
+	}
+
+	{
+		var out, errOut bytes.Buffer
+		withChdir(t, dir, func() {
+			code := run(ctx, []string{"--ws", ws, "apply"}, IO{In: strings.NewReader(""), Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("apply exit=%d stderr=%s", code, errOut.String())
+			}
+		})
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "top.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected top.txt removed, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "docs", "guide.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected docs/guide.txt removed, err=%v", err)
+	}
+	if got := mustRead(t, filepath.Join(dir, "docs", "moved.txt")); got != "alpha\nbeta\n" {
+		t.Fatalf("unexpected moved file content: %q", got)
 	}
 }

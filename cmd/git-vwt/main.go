@@ -19,6 +19,8 @@ import (
 
 const zeroOID = "0000000000000000000000000000000000000000"
 
+var version = "dev"
+
 type IO struct {
 	In  io.Reader
 	Out io.Writer
@@ -50,6 +52,9 @@ func run(ctx context.Context, argv []string, stdio IO) int {
 
 	for len(argv) > 0 {
 		switch argv[0] {
+		case "--version":
+			fmt.Fprintf(stdio.Out, "git-vwt %s\n", version)
+			return 0
 		case "--help", "-h", "help":
 			usage(stdio.Out)
 			return 0
@@ -89,6 +94,8 @@ doneGlobals:
 	args := argv[1:]
 
 	switch cmd {
+	case "version":
+		return cmdVersion(args, stdio)
 	case "open":
 		return cmdOpen(ctx, gr, wsName, agentName, args, stdio)
 	case "info":
@@ -120,13 +127,16 @@ doneGlobals:
 
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "git vwt - virtual workspace (no hunks, no worktrees)")
+	fmt.Fprintf(w, "Version: %s\n", version)
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Global flags:")
 	fmt.Fprintln(w, "  --ws <name>     Workspace name (default: $VWT_WORKSPACE or 'default')")
 	fmt.Fprintln(w, "  --agent <name>  Author name for workspace commits (default: $VWT_AGENT)")
+	fmt.Fprintln(w, "  --version       Print version")
 	fmt.Fprintln(w, "  --debug         Print git commands to stderr")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  git vwt version                   Print version")
 	fmt.Fprintln(w, "  git vwt open [--base <rev>|auto]   Create workspace if missing")
 	fmt.Fprintln(w, "  git vwt info                      Print workspace base/head")
 	fmt.Fprintln(w, "  git vwt read <path>               Read file from workspace")
@@ -138,6 +148,20 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  git vwt patch                     Print unified diff vs workspace base")
 	fmt.Fprintln(w, "  git vwt apply                     Apply workspace changes to working dir")
 	fmt.Fprintln(w, "  git vwt close                     Delete workspace ref")
+}
+
+func cmdVersion(argv []string, stdio IO) int {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(stdio.Err)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stdio.Err, "version: no arguments")
+		return 2
+	}
+	fmt.Fprintf(stdio.Out, "git-vwt %s\n", version)
+	return 0
 }
 
 func ensureRepo(ctx context.Context, gr gitx.Runner) error {
@@ -1088,7 +1112,7 @@ func wsRemovePath(ctx context.Context, gr gitx.Runner, ws workspace, agent, path
 	}
 
 	newTree, err := rewriteTree(ctx, gr, ws.Head, func(tmpGit gitx.Runner) error {
-		_, err := tmpGit.RunGit(ctx, nil, "update-index", "--remove", "--", path)
+		_, err := tmpGit.RunGit(ctx, nil, "update-index", "--force-remove", "--", path)
 		return err
 	})
 	if err != nil {
@@ -1131,7 +1155,7 @@ func wsMovePath(ctx context.Context, gr gitx.Runner, ws workspace, agent, from, 
 	}
 
 	newTree, err := rewriteTree(ctx, gr, ws.Head, func(tmpGit gitx.Runner) error {
-		if _, err := tmpGit.RunGit(ctx, nil, "update-index", "--remove", "--", from); err != nil {
+		if _, err := tmpGit.RunGit(ctx, nil, "update-index", "--force-remove", "--", from); err != nil {
 			return err
 		}
 		_, err := tmpGit.RunGit(ctx, nil, "update-index", "--add", "--cacheinfo", mode, oid, to)

@@ -19,7 +19,7 @@ git vwt --ws demo apply
 ## Table of contents
 
 - [Why](#why)
-- [OpenCode quickstart](#opencode-quickstart)
+- [OpenCode quickstart (experimental)](#opencode-quickstart-experimental)
 - [Worktrees vs git-vwt](#worktrees-vs-git-vwt)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
@@ -31,6 +31,8 @@ git vwt --ws demo apply
 - [Benchmarks](#benchmarks)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
+- [Release process](#release-process)
+- [Changelog](#changelog)
 - [Integrations and skills](#integrations-and-skills)
 
 ## Why
@@ -41,7 +43,9 @@ git vwt --ws demo apply
 - Conflict-friendly apply: if parallel work overlaps, `apply` can fall back to conflict markers instead of dropping a patch.
 - Git-native: workspace state is just commits and refs.
 
-## OpenCode quickstart
+## OpenCode quickstart (experimental)
+
+The bundled OpenCode plugin is still experimental. The core `git vwt` CLI is the stable surface; the OpenCode integration is shipped for early adopters and may continue to evolve as OpenCode's plugin APIs change.
 
 Build the workspace CLI:
 
@@ -123,7 +127,7 @@ install -m 0755 git-vwt "$HOME/.local/bin/git-vwt"
 Make sure `$HOME/.local/bin` is on your `PATH`, then verify:
 
 ```bash
-git vwt help
+git vwt version
 ```
 
 ### Option 2: install with Go from a local clone
@@ -161,6 +165,7 @@ git vwt --ws demo close
 
 | Command | What it does |
 | --- | --- |
+| `git vwt version` | Print the CLI version. |
 | `git vwt open [--base <rev>|auto]` | Create workspace if missing. |
 | `git vwt info` | Print `<workspace> <head> <base>`. |
 | `git vwt read <path>` | Read file from workspace. |
@@ -177,6 +182,7 @@ git vwt --ws demo close
 
 | Flag / env var | Description |
 | --- | --- |
+| `--version` | Print the CLI version. |
 | `--ws <name>` / `VWT_WORKSPACE` | Workspace name (default: `default`). |
 | `--agent <name>` / `VWT_AGENT` | Author name for workspace commits. |
 | `--debug` | Print underlying Git commands to stderr. |
@@ -228,6 +234,16 @@ From the repository root:
 go test ./...
 go build -o git-vwt ./cmd/git-vwt
 ```
+
+## Release process
+
+- Release metadata lives in `CHANGELOG.md`.
+- Tagging a `v*` release triggers `.github/workflows/release.yml` to build GitHub release archives for Linux, macOS, and Windows, plus a `checksums.txt` manifest.
+- The release checklist is documented in `docs/RELEASING.md`.
+
+## Changelog
+
+See `CHANGELOG.md`.
 
 ## Integrations and skills
 
