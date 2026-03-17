@@ -50,10 +50,12 @@ The bundled OpenCode plugin is still experimental. The core `git vwt` CLI is the
 Install the OpenCode files into your current project:
 
 ```bash
-git vwt opencode install
+git vwt opencode install --project
 ```
 
-That writes `opencode.json`, `.opencode/plugins/vwt-mode.ts`, and the bundled Bun metadata, then runs `bun install --frozen-lockfile` automatically when Bun is available.
+By default, `git vwt opencode install` installs into the global OpenCode config directory (`$OPENCODE_CONFIG_DIR` or `~/.config/opencode`). Use `--project` to install into the current repository instead.
+
+That writes `opencode.json`, `.opencode/plugins/vwt-mode.ts` or `plugins/vwt-mode.ts` depending on the target, plus the bundled Bun metadata, then runs `bun install --frozen-lockfile` automatically when Bun is available.
 
 If `git vwt` on your PATH is some other tool, build this repo's binary first:
 
@@ -198,7 +200,8 @@ git vwt --ws demo close
 
 | Command | What it does |
 | --- | --- |
-| `git vwt opencode install` | Install the bundled OpenCode plugin into the current project. |
+| `git vwt opencode install` | Install the bundled OpenCode plugin into the global OpenCode config. |
+| `git vwt opencode install --project` | Install the bundled OpenCode plugin into the current project. |
 | `git vwt version` | Print the CLI version. |
 | `git vwt version --check` | Print the CLI version and check for a newer release. |
 | `git vwt version --check --json` | Print machine-readable version/update status for agent integrations. |

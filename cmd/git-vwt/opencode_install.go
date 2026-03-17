@@ -24,6 +24,13 @@ type bunInstallResult struct {
 }
 
 var runOpenCodeBunInstall = defaultRunOpenCodeBunInstall
+var userConfigDir = os.UserConfigDir
+
+type opencodeInstallTarget struct {
+	Root      string
+	PluginDir string
+	Mode      string
+}
 
 func cmdOpenCode(ctx context.Context, argv []string, stdio IO) int {
 	if len(argv) == 0 {
@@ -43,7 +50,8 @@ func cmdOpenCode(ctx context.Context, argv []string, stdio IO) int {
 
 func cmdOpenCodeInstall(ctx context.Context, argv []string, stdio IO) int {
 	fs := flag.NewFlagSet("opencode install", flag.ContinueOnError)
-	dir := fs.String("dir", ".", "target project directory")
+	project := fs.Bool("project", false, "install into the current project instead of the global OpenCode config")
+	dir := fs.String("dir", "", "override the target directory")
 	force := fs.Bool("force", false, "overwrite conflicting existing files")
 	skipBunInstall := fs.Bool("skip-bun-install", false, "write files but skip bun install")
 	fs.SetOutput(stdio.Err)
@@ -55,17 +63,17 @@ func cmdOpenCodeInstall(ctx context.Context, argv []string, stdio IO) int {
 		return 2
 	}
 
-	root, err := filepath.Abs(*dir)
+	target, err := resolveOpenCodeInstallTarget(*project, *dir)
 	if err != nil {
-		fmt.Fprintf(stdio.Err, "opencode install: resolve dir: %v\n", err)
+		fmt.Fprintf(stdio.Err, "opencode install: %v\n", err)
 		return 1
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(target.Root, 0o755); err != nil {
 		fmt.Fprintf(stdio.Err, "opencode install: create dir: %v\n", err)
 		return 1
 	}
 
-	written, unchanged, err := installOpenCodeFiles(root, *force)
+	written, unchanged, err := installOpenCodeFiles(target, *force)
 	if err != nil {
 		fmt.Fprintf(stdio.Err, "opencode install: %v\n", err)
 		return 1
@@ -73,15 +81,15 @@ func cmdOpenCodeInstall(ctx context.Context, argv []string, stdio IO) int {
 
 	bunResult := bunInstallResult{Skipped: true, Message: "bun install skipped by flag"}
 	if !*skipBunInstall {
-		bunResult, err = runOpenCodeBunInstall(ctx, root)
+		bunResult, err = runOpenCodeBunInstall(ctx, target.PluginDir)
 		if err != nil {
-			fmt.Fprintf(stdio.Out, "installed OpenCode plugin files in %s (%d written, %d unchanged)\n", root, written, unchanged)
+			fmt.Fprintf(stdio.Out, "installed OpenCode plugin files in %s %s (%d written, %d unchanged)\n", target.Mode, target.Root, written, unchanged)
 			fmt.Fprintf(stdio.Err, "opencode install: %v\n", err)
 			return 1
 		}
 	}
 
-	fmt.Fprintf(stdio.Out, "installed OpenCode plugin files in %s (%d written, %d unchanged)\n", root, written, unchanged)
+	fmt.Fprintf(stdio.Out, "installed OpenCode plugin files in %s %s (%d written, %d unchanged)\n", target.Mode, target.Root, written, unchanged)
 	if bunResult.Message != "" {
 		fmt.Fprintln(stdio.Out, bunResult.Message)
 	}
@@ -89,10 +97,49 @@ func cmdOpenCodeInstall(ctx context.Context, argv []string, stdio IO) int {
 	return 0
 }
 
-func installOpenCodeFiles(root string, force bool) (written int, unchanged int, err error) {
-	for _, asset := range opencodeInstallFiles {
-		target := filepath.Join(root, filepath.FromSlash(asset.Path))
-		current, readErr := os.ReadFile(target)
+func resolveOpenCodeInstallTarget(project bool, dir string) (opencodeInstallTarget, error) {
+	if strings.TrimSpace(dir) != "" {
+		root, err := filepath.Abs(dir)
+		if err != nil {
+			return opencodeInstallTarget{}, fmt.Errorf("resolve dir: %v", err)
+		}
+		if project {
+			return opencodeInstallTarget{Root: root, PluginDir: filepath.Join(root, ".opencode"), Mode: "project"}, nil
+		}
+		return opencodeInstallTarget{Root: root, PluginDir: root, Mode: "global"}, nil
+	}
+	if project {
+		root, err := os.Getwd()
+		if err != nil {
+			return opencodeInstallTarget{}, fmt.Errorf("resolve current working directory: %v", err)
+		}
+		return opencodeInstallTarget{Root: root, PluginDir: filepath.Join(root, ".opencode"), Mode: "project"}, nil
+	}
+	if cfg := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_DIR")); cfg != "" {
+		root, err := filepath.Abs(cfg)
+		if err != nil {
+			return opencodeInstallTarget{}, fmt.Errorf("resolve OPENCODE_CONFIG_DIR: %v", err)
+		}
+		return opencodeInstallTarget{Root: root, PluginDir: root, Mode: "global"}, nil
+	}
+	base, err := userConfigDir()
+	if err != nil {
+		return opencodeInstallTarget{}, fmt.Errorf("resolve user config dir: %v", err)
+	}
+	root := filepath.Join(base, "opencode")
+	return opencodeInstallTarget{Root: root, PluginDir: root, Mode: "global"}, nil
+}
+
+func installOpenCodeFiles(target opencodeInstallTarget, force bool) (written int, unchanged int, err error) {
+	assets := openCodeInstallFilesForTarget(target.Mode == "project")
+	if len(assets) == 0 {
+		return 0, 0, fmt.Errorf("no OpenCode install assets available")
+	}
+
+	root := target.Root
+	for _, asset := range assets {
+		path := filepath.Join(root, filepath.FromSlash(asset.Path))
+		current, readErr := os.ReadFile(path)
 		switch {
 		case readErr == nil:
 			if bytes.Equal(current, []byte(asset.Content)) {
@@ -100,7 +147,7 @@ func installOpenCodeFiles(root string, force bool) (written int, unchanged int, 
 				continue
 			}
 			if !force {
-				return 0, 0, fmt.Errorf("refusing to overwrite %s; rerun with --force", target)
+				return 0, 0, fmt.Errorf("refusing to overwrite %s; rerun with --force", path)
 			}
 		case os.IsNotExist(readErr):
 			// write below
@@ -111,17 +158,17 @@ func installOpenCodeFiles(root string, force bool) (written int, unchanged int, 
 
 	written = 0
 	unchanged = 0
-	for _, asset := range opencodeInstallFiles {
-		target := filepath.Join(root, filepath.FromSlash(asset.Path))
-		current, readErr := os.ReadFile(target)
+	for _, asset := range assets {
+		path := filepath.Join(root, filepath.FromSlash(asset.Path))
+		current, readErr := os.ReadFile(path)
 		if readErr == nil && bytes.Equal(current, []byte(asset.Content)) {
 			unchanged++
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return 0, 0, err
 		}
-		if err := os.WriteFile(target, []byte(asset.Content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(asset.Content), 0o644); err != nil {
 			return 0, 0, err
 		}
 		written++
@@ -129,16 +176,39 @@ func installOpenCodeFiles(root string, force bool) (written int, unchanged int, 
 	return written, unchanged, nil
 }
 
+func openCodeInstallFilesForTarget(project bool) []opencodeInstallFile {
+	assets := make([]opencodeInstallFile, 0, len(opencodeInstallFiles))
+	for _, asset := range opencodeInstallFiles {
+		if project {
+			assets = append(assets, asset)
+			continue
+		}
+		switch asset.Path {
+		case ".opencode/.gitignore":
+			continue
+		case ".opencode/package.json":
+			assets = append(assets, opencodeInstallFile{Path: "package.json", Content: asset.Content})
+		case ".opencode/bun.lock":
+			assets = append(assets, opencodeInstallFile{Path: "bun.lock", Content: asset.Content})
+		case ".opencode/plugins/vwt-mode.ts":
+			assets = append(assets, opencodeInstallFile{Path: "plugins/vwt-mode.ts", Content: asset.Content})
+		default:
+			assets = append(assets, asset)
+		}
+	}
+	return assets
+}
+
 func defaultRunOpenCodeBunInstall(ctx context.Context, root string) (bunInstallResult, error) {
 	if _, err := exec.LookPath("bun"); err != nil {
 		return bunInstallResult{
 			Skipped: true,
-			Message: "bun not found; run `bun install --cwd .opencode` after installing Bun",
+			Message: fmt.Sprintf("bun not found; run `bun install --cwd %s` after installing Bun", filepath.ToSlash(root)),
 		}, nil
 	}
 
 	cmd := exec.CommandContext(ctx, "bun", "install", "--frozen-lockfile")
-	cmd.Dir = filepath.Join(root, ".opencode")
+	cmd.Dir = root
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -153,5 +223,5 @@ func defaultRunOpenCodeBunInstall(ctx context.Context, root string) (bunInstallR
 }
 
 func writeOpenCodeInstallUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: git vwt opencode install [--dir <path>] [--force] [--skip-bun-install]")
+	fmt.Fprintln(w, "usage: git vwt opencode install [--project] [--dir <path>] [--force] [--skip-bun-install]")
 }

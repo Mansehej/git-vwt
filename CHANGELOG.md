@@ -8,6 +8,14 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 - No unreleased changes yet.
 
+## [0.1.3] - 2026-03-17
+
+### Changed
+
+- `git vwt opencode install` now targets the global OpenCode config by default and supports `--project` for repo-local installation.
+- The installer now respects `OPENCODE_CONFIG_DIR` for global installs and adjusts the Bun install path to match the selected target.
+- Updated the OpenCode docs to clarify the global-vs-project install modes.
+
 ## [0.1.2] - 2026-03-17
 
 ### Added
