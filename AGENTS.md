@@ -90,7 +90,7 @@ git push origin v0.x.y
 ```
 
 4. `.github/workflows/release.yml` publishes the GitHub Release artifacts and checksums, then regenerates `Formula/git-vwt.rb` from the published `checksums.txt` and pushes the Homebrew formula bump back to `main`.
-5. Verify the release page, the uploaded archives, and that `brew tap Mansehej/git-vwt && brew install git-vwt` resolves to the new version.
+5. Verify the release page, the uploaded archives, and that `brew tap Mansehej/git-vwt https://github.com/Mansehej/git-vwt && brew install git-vwt` resolves to the new version.
 
 Notes:
 

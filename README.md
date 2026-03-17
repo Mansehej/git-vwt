@@ -125,8 +125,7 @@ Download the archive for your platform from GitHub Releases, extract it, and ins
 ### Option 2: install with Homebrew
 
 ```bash
-brew tap Mansehej/git-vwt
-brew install git-vwt
+brew tap Mansehej/git-vwt https://github.com/Mansehej/git-vwt && brew install git-vwt
 ```
 
 Then verify:

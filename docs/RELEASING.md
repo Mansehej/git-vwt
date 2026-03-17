@@ -45,5 +45,5 @@ After the release workflow finishes, verify:
 - the GitHub release exists for the tag
 - each archive downloads and extracts cleanly
 - `git vwt version` prints the tag value from the released binary
-- `brew tap Mansehej/git-vwt && brew install git-vwt` installs the expected release on macOS and Linux
+- `brew tap Mansehej/git-vwt https://github.com/Mansehej/git-vwt && brew install git-vwt` installs the expected release on macOS and Linux
 - `Formula/git-vwt.rb` on `main` references the new tag and matching checksums
