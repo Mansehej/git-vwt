@@ -8,6 +8,24 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 - No unreleased changes yet.
 
+## [0.1.1] - 2026-03-17
+
+### Added
+
+- Added release build update checks via `git vwt version --check` and machine-readable status via `git vwt version --check --json` for agent integrations.
+- Added agent-friendly OpenCode update prompts so primary sessions can ask the user about upgrading `git-vwt` without polluting normal CLI command output.
+- Added Homebrew distribution support, including an MIT license declaration and installation docs.
+
+### Changed
+
+- Automated Homebrew formula updates as part of the tagged release workflow, with the formula generator now implemented in Go.
+- Documented the release process in `AGENTS.md` and clarified the working Homebrew tap/install command for the current repository layout.
+
+### Fixed
+
+- Fixed CI by tracking the OpenCode plugin manifest and lockfile in `.opencode/`.
+- Normalized Git test repository line endings so the cross-platform test matrix passes on Windows.
+
 ## [0.1.0] - 2026-03-17
 
 ### Added
