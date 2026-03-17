@@ -95,7 +95,7 @@ doneGlobals:
 
 	switch cmd {
 	case "version":
-		return cmdVersion(args, stdio)
+		return cmdVersion(ctx, args, stdio)
 	case "open":
 		return cmdOpen(ctx, gr, wsName, agentName, args, stdio)
 	case "info":
@@ -133,10 +133,11 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  --ws <name>     Workspace name (default: $VWT_WORKSPACE or 'default')")
 	fmt.Fprintln(w, "  --agent <name>  Author name for workspace commits (default: $VWT_AGENT)")
 	fmt.Fprintln(w, "  --version       Print version")
+	fmt.Fprintln(w, "  VWT_NO_UPDATE_CHECK=1  Disable update checks")
 	fmt.Fprintln(w, "  --debug         Print git commands to stderr")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  git vwt version                   Print version")
+	fmt.Fprintln(w, "  git vwt version [--check] [--json]  Print version")
 	fmt.Fprintln(w, "  git vwt open [--base <rev>|auto]   Create workspace if missing")
 	fmt.Fprintln(w, "  git vwt info                      Print workspace base/head")
 	fmt.Fprintln(w, "  git vwt read <path>               Read file from workspace")
@@ -150,8 +151,10 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  git vwt close                     Delete workspace ref")
 }
 
-func cmdVersion(argv []string, stdio IO) int {
+func cmdVersion(ctx context.Context, argv []string, stdio IO) int {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	check := fs.Bool("check", false, "check for a newer release")
+	jsonOut := fs.Bool("json", false, "print version info as JSON")
 	fs.SetOutput(stdio.Err)
 	if err := fs.Parse(argv); err != nil {
 		return 2
@@ -160,7 +163,44 @@ func cmdVersion(argv []string, stdio IO) int {
 		fmt.Fprintln(stdio.Err, "version: no arguments")
 		return 2
 	}
+	status := versionCheckStatus{
+		CurrentVersion: version,
+		CheckEnabled:   !updateChecksDisabled() && canCheckForUpdates(version),
+	}
+	if *check {
+		var err error
+		status, err = newUpdateChecker(version).status(ctx, true)
+		if err != nil {
+			if *jsonOut {
+				_ = json.NewEncoder(stdio.Out).Encode(status)
+				return 0
+			}
+			fmt.Fprintf(stdio.Err, "version check failed: %v\n", err)
+			fmt.Fprintf(stdio.Out, "git-vwt %s\n", version)
+			return 0
+		}
+	}
+	if *jsonOut {
+		_ = json.NewEncoder(stdio.Out).Encode(status)
+		return 0
+	}
 	fmt.Fprintf(stdio.Out, "git-vwt %s\n", version)
+	if !*check {
+		return 0
+	}
+	if updateChecksDisabled() {
+		fmt.Fprintln(stdio.Err, "update checks disabled by VWT_NO_UPDATE_CHECK=1")
+		return 0
+	}
+	if !canCheckForUpdates(version) {
+		fmt.Fprintln(stdio.Err, "update checks are unavailable for dev builds")
+		return 0
+	}
+	if !status.UpdateAvailable {
+		fmt.Fprintln(stdio.Err, "git-vwt is up to date")
+		return 0
+	}
+	fmt.Fprintf(stdio.Err, "update available: %s -> %s (%s)\n", status.CurrentVersion, status.LatestVersion, status.ReleaseURL)
 	return 0
 }
 

@@ -53,6 +53,7 @@ When enabled, it:
 3. Enforces safety:
     - child sessions can never apply
     - primary session can apply/close child workspaces
+4. For primary sessions, checks `git vwt version --check --json` and, when an update is available, instructs the agent to ask the user about updating at the end of a user-facing response
 
 When `OPENCODE_VWT` is not set, the plugin returns no hooks/tools and OpenCode behaves normally.
 

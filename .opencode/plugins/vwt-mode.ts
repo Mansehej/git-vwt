@@ -98,6 +98,22 @@ function vwtAuthor(agent: string): string {
   return a ? `opencode:${a}` : "opencode"
 }
 
+type VwtVersionStatus = {
+  current_version?: string
+  latest_version?: string
+  release_url?: string
+  update_available?: boolean
+  check_enabled?: boolean
+  check_performed?: boolean
+}
+
+function renderUpdateInstruction(status: VwtVersionStatus | null | undefined): string | undefined {
+  if (!status?.update_available || !status.latest_version) return undefined
+  const current = status.current_version?.trim() || "the current version"
+  const suffix = status.release_url ? ` (${status.release_url})` : ""
+  return `- If your response is user-facing and you're wrapping up, mention that git-vwt can be updated from ${current} to ${status.latest_version} and ask whether the user wants you to update it${suffix}.`
+}
+
 const APPLY_PATCH_DESCRIPTION = `Use the \`apply_patch\` tool to edit files. Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high-level envelope:
 
 *** Begin Patch
@@ -556,6 +572,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
   let vwtPrefixCache: string[] | null = null
   let orphanSweepPromise: Promise<void> | null = null
+  let versionStatusPromise: Promise<VwtVersionStatus | null> | null = null
 
   async function vwtPrefix(cwd: string): Promise<string[]> {
     if (vwtPrefixCache) return vwtPrefixCache
@@ -600,6 +617,23 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
   async function isChildSession(sessionID: string): Promise<boolean> {
     return (await getParentID(sessionID)) != null
+  }
+
+  async function vwtVersionStatus(cwd: string): Promise<VwtVersionStatus | null> {
+    if (versionStatusPromise) return versionStatusPromise
+    versionStatusPromise = (async () => {
+      try {
+        const prefix = await vwtPrefix(cwd)
+        const res = await $.cwd(cwd)`${prefix} version --check --json`.nothrow().quiet()
+        if (res.exitCode !== 0) return null
+        const text = res.stdout.toString().trim()
+        if (!text) return null
+        return JSON.parse(text) as VwtVersionStatus
+      } catch {
+        return null
+      }
+    })()
+    return versionStatusPromise
   }
 
   async function ensureWsOpen(ws: string, agent: string, cwd: string): Promise<void> {
@@ -966,6 +1000,8 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
     async "experimental.chat.system.transform"(input, output) {
       const ws = input.sessionID ? wsForSession(input.sessionID) : "opencode-<sessionID>"
+      const isChild = input.sessionID ? await isChildSession(input.sessionID) : false
+      const updateInstruction = !isChild ? renderUpdateInstruction(await vwtVersionStatus(projectWorktree)) : undefined
       output.system.push(
         [
           "VWT mode is enabled (OPENCODE_VWT=1).",
@@ -977,7 +1013,8 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
           "- When a child session becomes idle with workspace changes, the plugin sends a synthetic orchestration message to the primary session.",
           "- The primary session should use vwt_apply to integrate child workspaces and vwt_close after the workspace is fully integrated.",
           "- If vwt_apply reports conflicts, the primary session should resolve them automatically before reporting back to the user.",
-        ].join("\n"),
+          updateInstruction,
+        ].filter(Boolean).join("\n"),
       )
     },
 
@@ -1564,5 +1601,6 @@ export const __test__ = {
   joinLinesWithEOF,
   orphanedOpenCodeWorkspaces,
   parsePatch,
+  renderUpdateInstruction,
   splitLinesWithEOF,
 }

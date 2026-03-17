@@ -85,3 +85,21 @@ describe("orphan workspace sweep", () => {
     expect(result).toEqual(["opencode-orphan"])
   })
 })
+
+describe("update instruction", () => {
+  test("renders a user-facing update prompt when a newer release exists", () => {
+    const result = __test__.renderUpdateInstruction({
+      current_version: "v0.1.0",
+      latest_version: "v0.2.0",
+      release_url: "https://example.com/release",
+      update_available: true,
+    })
+
+    expect(result).toContain("git-vwt can be updated from v0.1.0 to v0.2.0")
+    expect(result).toContain("ask whether the user wants you to update it")
+  })
+
+  test("omits the instruction when no update is available", () => {
+    expect(__test__.renderUpdateInstruction({ current_version: "v0.1.0", update_available: false })).toBeUndefined()
+  })
+})

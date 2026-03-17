@@ -135,6 +135,12 @@ Then verify:
 git vwt version
 ```
 
+To upgrade later:
+
+```bash
+brew upgrade git-vwt
+```
+
 ### Option 3: build from source
 
 From the repository root:
@@ -186,6 +192,8 @@ git vwt --ws demo close
 | Command | What it does |
 | --- | --- |
 | `git vwt version` | Print the CLI version. |
+| `git vwt version --check` | Print the CLI version and check for a newer release. |
+| `git vwt version --check --json` | Print machine-readable version/update status for agent integrations. |
 | `git vwt open [--base <rev>|auto]` | Create workspace if missing. |
 | `git vwt info` | Print `<workspace> <head> <base>`. |
 | `git vwt read <path>` | Read file from workspace. |
@@ -205,7 +213,16 @@ git vwt --ws demo close
 | `--version` | Print the CLI version. |
 | `--ws <name>` / `VWT_WORKSPACE` | Workspace name (default: `default`). |
 | `--agent <name>` / `VWT_AGENT` | Author name for workspace commits. |
+| `VWT_NO_UPDATE_CHECK=1` | Disable update checks. |
 | `--debug` | Print underlying Git commands to stderr. |
+
+## Updates
+
+- Homebrew installs update with `brew upgrade git-vwt`.
+- GitHub Release installs update by downloading the newer archive and replacing the existing binary.
+- Run `git vwt version --check` to check for a newer release.
+- Run `git vwt version --check --json` for machine-readable status in agent integrations.
+- The OpenCode plugin can use that status to prompt the agent to ask the user about updating at the end of a response, without polluting normal CLI command output.
 
 ## Workspace behavior
 
