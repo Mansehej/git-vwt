@@ -6,6 +6,8 @@ This guide describes the OpenCode integration plan that:
 - enforces "subagents can't apply"
 - only enables VWT behavior when explicitly toggled per run via `OPENCODE_VWT=1`
 
+For the full architecture and exact tool-mapping model, see `docs/harnesses/opencode-vwt-architecture.md`.
+
 ## What this repo now ships
 
 - `opencode.json`: marks `vwt_apply` and `vwt_close` as primary-only

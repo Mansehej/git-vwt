@@ -11,3 +11,5 @@ Install by copying a skill directory to one of these locations:
 - Codex: `.agents/skills/<skill>/SKILL.md` (repo) or `~/.agents/skills/<skill>/SKILL.md`
 
 OpenCode also scans `.claude/skills` and `.agents/skills`.
+
+For the bundled OpenCode VWT plugin architecture, see `docs/harnesses/opencode-vwt.md` and `docs/harnesses/opencode-vwt-architecture.md`.

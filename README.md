@@ -82,7 +82,7 @@ Optional (advanced): isolate primary sessions too (useful when running many `ope
 OPENCODE_VWT=1 OPENCODE_VWT_PRIMARY=1 opencode
 ```
 
-See `docs/harnesses/opencode-vwt.md` for more details.
+See `docs/harnesses/opencode-vwt.md` for the quickstart and `docs/harnesses/opencode-vwt-architecture.md` for the full tool-virtualization architecture.
 
 ## Worktrees vs git-vwt
 
