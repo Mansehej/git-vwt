@@ -114,7 +114,7 @@ function renderUpdateInstruction(status: VwtVersionStatus | null | undefined): s
   return `- If your response is user-facing and you're wrapping up, mention that git-vwt can be updated from ${current} to ${status.latest_version} and ask whether the user wants you to update it${suffix}.`
 }
 
-const APPLY_PATCH_DESCRIPTION = `Use the \`apply_patch\` tool to edit files. Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high-level envelope:
+const PATCH_TOOL_DESCRIPTION = `Apply structured patches to files. The patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high-level envelope:
 
 *** Begin Patch
 [ one or more file sections ]
@@ -524,6 +524,35 @@ function deriveNewContentsFromChunks(
   return joinLinesWithEOF(newLines, hasTrailingNewline)
 }
 
+function patchToolSuccessMessage(summaryLines: string[]): string {
+  return `Success. Updated the following files:\n${summaryLines.join("\n")}\n`
+}
+
+function buildVwtSystemPrompt(opts: {
+  isChild: boolean
+  isolatePrimary: boolean
+  updateInstruction?: string
+}): string {
+  if (opts.isChild) {
+    return [
+      "Use normal file tools as usual.",
+      "- Do not try to apply changes to the working directory.",
+      "- If this child session becomes idle with integration work, the primary session will be prompted automatically.",
+    ].join("\n")
+  }
+
+  return [
+    "VWT mode is enabled (OPENCODE_VWT=1).",
+    opts.isolatePrimary
+      ? "- Use normal file tools as usual; this primary session's file operations are backed by an isolated git-vwt workspace."
+      : "- Use normal file tools as usual; this primary session edits the checked-out working directory.",
+    "- Child sessions use the same normal file tools, but their file operations are routed into isolated workspaces automatically.",
+    "- When a child session becomes idle with integration work, you'll receive a synthetic prompt to run `vwt_apply`, resolve any conflicts, and then run `vwt_close`.",
+    "- Do not ask child sessions to apply changes directly.",
+    opts.updateInstruction,
+  ].filter(Boolean).join("\n")
+}
+
 export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktree }) => {
   // ENV-variable toggle (per-run): this plugin is a no-op unless enabled.
   const envEnabled = truthyEnv(process.env.OPENCODE_VWT)
@@ -543,8 +572,9 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     await client.tui
       .showToast({
         title: "VWT mode active",
-        message:
-          "OPENCODE_VWT=1 is set. Subagents edit isolated git-vwt workspaces; the primary edits the working tree normally.",
+        message: isolatePrimary
+          ? "OPENCODE_VWT=1 is set. This primary session and its subagents edit isolated git-vwt workspaces."
+          : "OPENCODE_VWT=1 is set. Subagents edit isolated git-vwt workspaces; the primary edits the working tree normally.",
         variant: "info",
         duration: 12000,
       })
@@ -617,6 +647,10 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
   async function isChildSession(sessionID: string): Promise<boolean> {
     return (await getParentID(sessionID)) != null
+  }
+
+  async function useVwtForSession(sessionID: string): Promise<boolean> {
+    return isolatePrimary || (await isChildSession(sessionID))
   }
 
   async function vwtVersionStatus(cwd: string): Promise<VwtVersionStatus | null> {
@@ -788,6 +822,109 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     } catch (err) {
       throw new Error(`failed to parse git-vwt apply output: ${String(err)}`)
     }
+  }
+
+  async function executePatchTool(args: { patchText: string }, context: any): Promise<string> {
+    const raw = String(args.patchText ?? "")
+    if (!raw.trim()) throw new Error("patchText is required")
+
+    const patchText = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+
+    let hunks: PatchHunk[]
+    try {
+      hunks = parsePatch(patchText).hunks
+    } catch (err: any) {
+      throw new Error(`patch verification failed: ${err?.message ?? String(err)}`)
+    }
+
+    if (hunks.length === 0) {
+      const normalized = patchText.trim()
+      if (normalized === "*** Begin Patch\n*** End Patch") {
+        throw new Error("patch rejected: empty patch")
+      }
+      throw new Error("patch verification failed: no hunks found")
+    }
+
+    const useVwt = await useVwtForSession(context.sessionID)
+    const ws = wsForSession(context.sessionID)
+    const author = vwtAuthor(context.agent)
+
+    const touched: string[] = []
+    for (const hunk of hunks) {
+      const { rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
+      touched.push(rel)
+      if (hunk.type === "update" && hunk.move_path) {
+        const { rel: moveRel } = resolveWorktreePath(hunk.move_path, context.directory, context.worktree)
+        touched.push(moveRel)
+      }
+    }
+    const uniqueTouched = Array.from(new Set(touched)).sort((a, b) => a.localeCompare(b))
+
+    await context.ask({
+      permission: "edit",
+      patterns: uniqueTouched,
+      always: ["*"],
+      metadata: { files: uniqueTouched.join(", ") },
+    })
+
+    const summaryLines: string[] = []
+    for (const hunk of hunks) {
+      if (hunk.type === "add") {
+        const { abs, rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
+        if (useVwt) {
+          await vwtWrite(ws, author, context.worktree, rel, hunk.contents)
+        } else {
+          await fs.mkdir(path.dirname(abs), { recursive: true })
+          await fs.writeFile(abs, hunk.contents, "utf8")
+        }
+        summaryLines.push(`A ${rel}`)
+        continue
+      }
+
+      if (hunk.type === "delete") {
+        const { abs, rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
+        if (useVwt) {
+          await vwtRemove(ws, author, context.worktree, rel)
+        } else {
+          await fs.unlink(abs)
+        }
+        summaryLines.push(`D ${rel}`)
+        continue
+      }
+
+      const { abs, rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
+      const before = useVwt
+        ? await vwtRead(ws, author, context.worktree, rel)
+        : await fs.readFile(abs, "utf8")
+      const after = deriveNewContentsFromChunks(before, rel, hunk.chunks)
+
+      if (hunk.move_path) {
+        const { abs: moveAbs, rel: moveRel } = resolveWorktreePath(hunk.move_path, context.directory, context.worktree)
+        if (useVwt) {
+          await vwtWrite(ws, author, context.worktree, moveRel, after)
+          if (moveRel !== rel) {
+            await vwtRemove(ws, author, context.worktree, rel)
+          }
+        } else {
+          await fs.mkdir(path.dirname(moveAbs), { recursive: true })
+          await fs.writeFile(moveAbs, after, "utf8")
+          if (moveAbs !== abs) {
+            await fs.unlink(abs)
+          }
+        }
+        summaryLines.push(`M ${moveRel}`)
+        continue
+      }
+
+      if (useVwt) {
+        await vwtWrite(ws, author, context.worktree, rel, after)
+      } else {
+        await fs.writeFile(abs, after, "utf8")
+      }
+      summaryLines.push(`M ${rel}`)
+    }
+
+    return patchToolSuccessMessage(summaryLines)
   }
 
   function sessionStateType(status: unknown): "busy" | "idle" | "retry" | undefined {
@@ -999,23 +1136,9 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
     },
 
     async "experimental.chat.system.transform"(input, output) {
-      const ws = input.sessionID ? wsForSession(input.sessionID) : "opencode-<sessionID>"
       const isChild = input.sessionID ? await isChildSession(input.sessionID) : false
       const updateInstruction = !isChild ? renderUpdateInstruction(await vwtVersionStatus(projectWorktree)) : undefined
-      output.system.push(
-        [
-          "VWT mode is enabled (OPENCODE_VWT=1).",
-          isolatePrimary
-            ? `- Primary sessions are isolated too (OPENCODE_VWT_PRIMARY=1): file tools edit the git-vwt workspace opencode-<sessionID> (this session: ${ws}).`
-            : "- Primary session: file tools edit the working directory (normal OpenCode behavior).",
-          `- Subagent sessions: file tools edit an isolated git-vwt workspace named opencode-<sessionID> (this session's workspace would be ${ws}).`,
-          "- Subagents must never apply changes to the working directory.",
-          "- When a child session becomes idle with workspace changes, the plugin sends a synthetic orchestration message to the primary session.",
-          "- The primary session should use vwt_apply to integrate child workspaces and vwt_close after the workspace is fully integrated.",
-          "- If vwt_apply reports conflicts, the primary session should resolve them automatically before reporting back to the user.",
-          updateInstruction,
-        ].filter(Boolean).join("\n"),
-      )
+      output.system.push(buildVwtSystemPrompt({ isChild, isolatePrimary, updateInstruction }))
     },
 
     async "tool.execute.before"(input, output) {
@@ -1033,7 +1156,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
     async "shell.env"(input, output) {
       if (!input.sessionID) return
-      if (!isolatePrimary && !(await isChildSession(input.sessionID))) return
+      if (!(await useVwtForSession(input.sessionID))) return
       const ws = wsForSession(input.sessionID)
       output.env.VWT_WORKSPACE = ws
       output.env.VWT_AGENT = "opencode"
@@ -1041,7 +1164,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 
     tool: {
       read: tool({
-        description: "Read a file (VWT-aware when enabled).",
+        description: "Read a file or directory.",
         args: {
           filePath: tool.schema.string().describe("Path to the file"),
           offset: tool.schema.number().int().optional().describe("Line offset (1-indexed)"),
@@ -1056,7 +1179,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
+          const useVwt = await useVwtForSession(context.sessionID)
           if (!useVwt) {
             try {
               const st = await fs.stat(abs)
@@ -1099,7 +1222,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       }),
 
       write: tool({
-        description: "Write a file (VWT-aware when enabled).",
+        description: "Create a new file or overwrite an existing file.",
         args: {
           filePath: tool.schema.string().describe("Path to the file"),
           content: tool.schema.string().describe("Full file content"),
@@ -1113,7 +1236,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
+          const useVwt = await useVwtForSession(context.sessionID)
           if (useVwt) {
             const ws = wsForSession(context.sessionID)
             await vwtWrite(ws, vwtAuthor(context.agent), context.worktree, rel, args.content)
@@ -1127,7 +1250,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       }),
 
       edit: tool({
-        description: "Edit a file by string replacement (VWT-aware when enabled).",
+        description: "Modify an existing file using exact string replacements.",
         args: {
           filePath: tool.schema.string().describe("Path to the file"),
           oldString: tool.schema.string().describe("The text to replace"),
@@ -1147,7 +1270,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
+          const useVwt = await useVwtForSession(context.sessionID)
           const ws = wsForSession(context.sessionID)
           const author = vwtAuthor(context.agent)
 
@@ -1194,120 +1317,28 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
         },
       }),
 
-      apply_patch: tool({
-        description: APPLY_PATCH_DESCRIPTION,
+      patch: tool({
+        description: PATCH_TOOL_DESCRIPTION,
         args: {
           patchText: tool.schema.string().describe("The full patch text that describes all changes to be made"),
         },
         async execute(args, context) {
-          const raw = String(args.patchText ?? "")
-          if (!raw.trim()) throw new Error("patchText is required")
+          return await executePatchTool(args, context)
+        },
+      }),
 
-          const patchText = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-
-          let hunks: PatchHunk[]
-          try {
-            hunks = parsePatch(patchText).hunks
-          } catch (err: any) {
-            throw new Error(`apply_patch verification failed: ${err?.message ?? String(err)}`)
-          }
-
-          if (hunks.length === 0) {
-            const normalized = patchText.trim()
-            if (normalized === "*** Begin Patch\n*** End Patch") {
-              throw new Error("patch rejected: empty patch")
-            }
-            throw new Error("apply_patch verification failed: no hunks found")
-          }
-
-          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
-          const ws = wsForSession(context.sessionID)
-          const author = vwtAuthor(context.agent)
-
-          const touched: string[] = []
-          for (const hunk of hunks) {
-            const { rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
-            touched.push(rel)
-            if (hunk.type === "update" && hunk.move_path) {
-              const { rel: moveRel } = resolveWorktreePath(hunk.move_path, context.directory, context.worktree)
-              touched.push(moveRel)
-            }
-          }
-          const uniqueTouched = Array.from(new Set(touched)).sort((a, b) => a.localeCompare(b))
-
-          await context.ask({
-            permission: "edit",
-            patterns: uniqueTouched,
-            always: ["*"],
-            metadata: { workspace: ws, files: uniqueTouched.join(", ") },
-          })
-
-          const summaryLines: string[] = []
-          for (const hunk of hunks) {
-            if (hunk.type === "add") {
-              const { abs, rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
-              if (useVwt) {
-                await vwtWrite(ws, author, context.worktree, rel, hunk.contents)
-              } else {
-                await fs.mkdir(path.dirname(abs), { recursive: true })
-                await fs.writeFile(abs, hunk.contents, "utf8")
-              }
-              summaryLines.push(`A ${rel}`)
-              continue
-            }
-
-            if (hunk.type === "delete") {
-              const { abs, rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
-              if (useVwt) {
-                await vwtRemove(ws, author, context.worktree, rel)
-              } else {
-                await fs.unlink(abs)
-              }
-              summaryLines.push(`D ${rel}`)
-              continue
-            }
-
-            const { abs, rel } = resolveWorktreePath(hunk.path, context.directory, context.worktree)
-            const before = useVwt
-              ? await vwtRead(ws, author, context.worktree, rel)
-              : await fs.readFile(abs, "utf8")
-            const after = deriveNewContentsFromChunks(before, rel, hunk.chunks)
-
-            if (hunk.move_path) {
-              const { abs: moveAbs, rel: moveRel } = resolveWorktreePath(hunk.move_path, context.directory, context.worktree)
-              if (useVwt) {
-                await vwtWrite(ws, author, context.worktree, moveRel, after)
-                if (moveRel !== rel) {
-                  await vwtRemove(ws, author, context.worktree, rel)
-                }
-              } else {
-                await fs.mkdir(path.dirname(moveAbs), { recursive: true })
-                await fs.writeFile(moveAbs, after, "utf8")
-                if (moveAbs !== abs) {
-                  await fs.unlink(abs)
-                }
-              }
-              summaryLines.push(`M ${moveRel}`)
-              continue
-            }
-
-            if (useVwt) {
-              await vwtWrite(ws, author, context.worktree, rel, after)
-            } else {
-              await fs.writeFile(abs, after, "utf8")
-            }
-            summaryLines.push(`M ${rel}`)
-          }
-
-          if (useVwt) {
-            return `Success. Updated the following files in workspace ${ws}:\n${summaryLines.join("\n")}\n`
-          }
-          return `Success. Updated the following files:\n${summaryLines.join("\n")}\n`
+      apply_patch: tool({
+        description: PATCH_TOOL_DESCRIPTION,
+        args: {
+          patchText: tool.schema.string().describe("The full patch text that describes all changes to be made"),
+        },
+        async execute(args, context) {
+          return await executePatchTool(args, context)
         },
       }),
 
       grep: tool({
-        description: "Search file contents using a regex (VWT-aware when enabled).",
+        description: "Search file contents using a regular expression.",
         args: {
           pattern: tool.schema.string().describe("Regex pattern"),
           path: tool.schema.string().optional().describe("Optional directory path to search (relative)"),
@@ -1321,7 +1352,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { pattern: args.pattern },
           })
 
-          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
+          const useVwt = await useVwtForSession(context.sessionID)
           if (!useVwt) {
             const cwd = context.worktree
             const searchPath = args.path
@@ -1367,7 +1398,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       }),
 
       list: tool({
-        description: "List directory contents (VWT-aware when enabled).",
+        description: "List files and directories in a path.",
         args: {
           path: tool.schema.string().optional().describe("Directory path"),
         },
@@ -1381,7 +1412,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { path: rel },
           })
 
-          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
+          const useVwt = await useVwtForSession(context.sessionID)
           if (useVwt) {
             return await vwtList(wsForSession(context.sessionID), vwtAuthor(context.agent), context.worktree, rel)
           }
@@ -1395,7 +1426,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       }),
 
       glob: tool({
-        description: "Find files by glob pattern (VWT-aware when enabled).",
+        description: "Find files by glob pattern.",
         args: {
           pattern: tool.schema.string().describe("Glob pattern"),
           path: tool.schema.string().optional().describe("Optional base path"),
@@ -1408,7 +1439,7 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
             metadata: { pattern: args.pattern },
           })
 
-          const useVwt = isolatePrimary || (await isChildSession(context.sessionID))
+          const useVwt = await useVwtForSession(context.sessionID)
           if (!useVwt) {
             const baseDir = context.worktree
             const globber = new Bun.Glob(args.pattern)
@@ -1489,11 +1520,15 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
       }),
 
       vwt_patch: tool({
-        description: "Show the git-vwt patch for a session workspace.",
+        description: "Show the git-vwt patch for a session workspace (primary-only).",
         args: {
           sessionID: tool.schema.string().optional().describe("Session ID (defaults to current)") ,
         },
         async execute(args, context) {
+          if (await isChildSession(context.sessionID)) {
+            throw new Error("subagents can't inspect workspace patches")
+          }
+
           const sid = args.sessionID ?? context.sessionID
           const ws = wsForSession(sid)
           await context.ask({
@@ -1596,10 +1631,12 @@ export const VwtModePlugin: Plugin = async ({ client, $, worktree: projectWorktr
 }
 
 export const __test__ = {
+  buildVwtSystemPrompt,
   chunkTrailingNewlineOverride,
   deriveNewContentsFromChunks,
   joinLinesWithEOF,
   orphanedOpenCodeWorkspaces,
+  patchToolSuccessMessage,
   parsePatch,
   renderUpdateInstruction,
   splitLinesWithEOF,

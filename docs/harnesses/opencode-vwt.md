@@ -10,7 +10,7 @@ For the full architecture and exact tool-mapping model, see `docs/harnesses/open
 
 ## What this repo now ships
 
-- `opencode.json`: marks `vwt_apply` and `vwt_close` as primary-only
+- `opencode.json`: marks `vwt_patch`, `vwt_apply`, and `vwt_close` as primary-only
 - `.opencode/plugins/vwt-mode.ts`: VWT mode plugin (tool routing + safety; no-op unless `OPENCODE_VWT=1`)
 
 ## Quickstart
@@ -54,7 +54,7 @@ Ship a single project plugin (example: `.opencode/plugins/vwt-mode.ts`) that is 
 When enabled, it:
 
 1. Routes file tools to `./git-vwt --ws opencode-<sessionID> ...` for **subagent (child) sessions**
-2. Redirects `apply_patch` in subagent sessions to edit the VWT workspace (not the working directory)
+2. Redirects `patch`/`apply_patch` in subagent sessions to edit the VWT workspace (not the working directory)
 3. Enforces safety:
     - child sessions can never apply
     - primary session can apply/close child workspaces
@@ -79,7 +79,7 @@ Because subagents run in child sessions, every subagent naturally gets its own w
 In VWT-enabled runs (`OPENCODE_VWT=1`), route these tools to VWT operations for child sessions:
 
 - `read` -> `git vwt --ws <ws> read <path>`
-- `apply_patch` -> parse patch text, then read/write through VWT (key for GPT-* models)
+- `patch` / `apply_patch` -> parse patch text, then read/write through VWT (key for GPT-* models)
 - `write`/`edit` -> route through VWT for non-`apply_patch` models
 - `list` -> `git vwt --ws <ws> ls [path]`
 - `grep` -> `git vwt --ws <ws> search <pattern> -- <pathspec...>`
@@ -87,14 +87,14 @@ In VWT-enabled runs (`OPENCODE_VWT=1`), route these tools to VWT operations for 
 
 In the primary session, keep normal filesystem behavior. This keeps the UX the same as stock OpenCode while still isolating subagents.
 
-Note: OpenCode prefers `apply_patch` over `write`/`edit` for GPT-* models, so redirecting `apply_patch` is the key part.
+Note: exact parity now treats `patch` and `apply_patch` the same way, so patch-style edits stay source-swapped regardless of which entrypoint the runtime uses.
 
 ## Enforcing "subagents can't apply"
 
 Enforce mechanically, not via prompt text:
 
-- Provide tools `vwt_apply` and `vwt_close`, but make them primary-only.
-  - Preferred: `experimental.primary_tools: ["vwt_apply", "vwt_close"]` in `opencode.json`
+- Provide tools `vwt_patch`, `vwt_apply`, and `vwt_close`, but make them primary-only.
+  - Preferred: `experimental.primary_tools: ["vwt_patch", "vwt_apply", "vwt_close"]` in `opencode.json`
 - In the plugin, block any attempt to apply from child sessions:
   - deny tool calls to `vwt_apply` for sessions with `parentID != null`
   - deny `bash` commands matching `git vwt apply*` for sessions with `parentID != null`

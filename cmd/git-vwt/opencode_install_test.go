@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -37,10 +38,14 @@ func TestOpenCodeInstallWritesBundledFiles(t *testing.T) {
 	if !called {
 		t.Fatal("expected bun install to be attempted")
 	}
-	if got := mustRead(t, filepath.Join(expectedRoot, "opencode.json")); got != opencodeInstallFiles[0].Content {
-		t.Fatalf("unexpected opencode.json contents: %q", got)
+	gotConfig := mustRead(t, filepath.Join(expectedRoot, "opencode.json"))
+	if gotConfig != opencodeInstallFiles[0].Content {
+		t.Fatalf("unexpected opencode.json contents: %q", gotConfig)
 	}
-	if got := mustRead(t, filepath.Join(expectedRoot, "plugins", "vwt-mode.ts")); !strings.Contains(got, "VWT mode is enabled") {
+	if !strings.Contains(gotConfig, `"vwt_patch"`) {
+		t.Fatalf("expected vwt_patch to be primary-only, got %q", gotConfig)
+	}
+	if got := mustRead(t, filepath.Join(expectedRoot, "plugins", "vwt-mode.ts")); !strings.Contains(got, "VWT mode is enabled") || !strings.Contains(got, "patch: tool({") || !strings.Contains(got, "apply_patch: tool({") {
 		t.Fatalf("unexpected plugin contents: %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(expectedRoot, ".opencode", ".gitignore")); !os.IsNotExist(err) {
@@ -140,5 +145,43 @@ func TestOpenCodeInstallProjectWritesProjectLayout(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOut.String())
+	}
+}
+
+func TestOpenCodeInstallAssetsMatchSourceFiles(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
+	expected := map[string]string{
+		"opencode.json":                 mustRead(t, filepath.Join(repoRoot, "opencode.json")),
+		".opencode/.gitignore":          mustRead(t, filepath.Join(repoRoot, ".opencode", ".gitignore")),
+		".opencode/package.json":        mustRead(t, filepath.Join(repoRoot, ".opencode", "package.json")),
+		".opencode/bun.lock":            mustRead(t, filepath.Join(repoRoot, ".opencode", "bun.lock")),
+		".opencode/plugins/vwt-mode.ts": mustRead(t, filepath.Join(repoRoot, ".opencode", "plugins", "vwt-mode.ts")),
+	}
+
+	if len(opencodeInstallFiles) != len(expected) {
+		t.Fatalf("asset count mismatch: got %d want %d", len(opencodeInstallFiles), len(expected))
+	}
+
+	seen := make(map[string]bool, len(opencodeInstallFiles))
+	for _, asset := range opencodeInstallFiles {
+		want, ok := expected[asset.Path]
+		if !ok {
+			t.Fatalf("unexpected bundled asset %q", asset.Path)
+		}
+		seen[asset.Path] = true
+		if asset.Content != want {
+			t.Fatalf("bundled asset %q is out of sync with source file", asset.Path)
+		}
+	}
+
+	for assetPath := range expected {
+		if !seen[assetPath] {
+			t.Fatalf("missing bundled asset %q", assetPath)
+		}
 	}
 }

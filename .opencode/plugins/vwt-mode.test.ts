@@ -103,3 +103,40 @@ describe("update instruction", () => {
     expect(__test__.renderUpdateInstruction({ current_version: "v0.1.0", update_available: false })).toBeUndefined()
   })
 })
+
+describe("system prompt", () => {
+  test("keeps child-session instructions focused on normal file tools", () => {
+    const result = __test__.buildVwtSystemPrompt({
+      isChild: true,
+      isolatePrimary: false,
+    })
+
+    expect(result).toContain("Use normal file tools as usual.")
+    expect(result).toContain("Do not try to apply changes to the working directory.")
+    expect(result).not.toContain("workspace opencode-")
+    expect(result).not.toContain("vwt_apply")
+  })
+
+  test("keeps primary-session orchestration guidance without leaking child tool changes", () => {
+    const result = __test__.buildVwtSystemPrompt({
+      isChild: false,
+      isolatePrimary: true,
+      updateInstruction: "- Update instruction.",
+    })
+
+    expect(result).toContain("VWT mode is enabled")
+    expect(result).toContain("Use normal file tools as usual")
+    expect(result).toContain("vwt_apply")
+    expect(result).toContain("vwt_close")
+    expect(result).toContain("- Update instruction.")
+  })
+})
+
+describe("patch output", () => {
+  test("does not mention workspace-specific success text", () => {
+    const result = __test__.patchToolSuccessMessage(["M demo.txt"])
+
+    expect(result).toBe("Success. Updated the following files:\nM demo.txt\n")
+    expect(result).not.toContain("workspace")
+  })
+})
